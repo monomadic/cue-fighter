@@ -31,6 +31,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +42,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cuehtml import (DEFAULT_BIN, PLAY_BUTTON, PLAYER_JS, esc, expand_tracks,  # noqa: E402
-                     file_url, read_cues, rel_url)
+                     file_url, mmss, read_cues, rel_url)
 
 # ---------------------------------------------------------------- waveform ---
 SR = 8000                                            # decode rate for analysis only
@@ -643,24 +645,64 @@ def main() -> None:
     ap.add_argument("--bin", default=DEFAULT_BIN, help="path to the cue-fighter binary")
     ap.add_argument("--no-wave", action="store_true", help="skip waveforms (much faster)")
     ap.add_argument("-j", "--jobs", type=int, default=min(8, (os.cpu_count() or 4)))
+    ap.add_argument("-q", "--quiet", action="store_true", help="no per-file progress")
     args = ap.parse_args()
 
     tracks = expand_tracks(args.tracks, args.list)
     if not tracks:
         raise SystemExit("no tracks given (paths, a directory, or --list)")
 
+    n = len(tracks)
+    width = len(str(n))
+    started = time.monotonic()
+    lock = threading.Lock()
+    state = {"done": 0, "cues": 0, "nocues": 0}
+    if not args.quiet:
+        print(f"inspecting {n} file{'s' if n > 1 else ''} "
+              f"({args.jobs} workers{', no waveforms' if args.no_wave else ''})", file=sys.stderr)
+
+    def note(t: Path, d: dict | None, err: str = "") -> None:
+        # printed from the worker so progress appears as files finish, not in
+        # submission order — a slow first file would otherwise stall the display
+        with lock:
+            state["done"] += 1
+            if args.quiet:
+                return
+            head = f"[{state['done']:>{width}}/{n}]"
+            if d is None:
+                print(f"{head} {t.name[:52]:<52} FAILED  {err}", file=sys.stderr)
+                return
+            state["cues"] += len(d["cues"])
+            state["nocues"] += 0 if d["cues"] else 1
+            flags = []
+            if not d["cues"]:
+                flags.append("no cues")
+            if not d.get("beatgrid"):
+                flags.append("no grid")
+            if d.get("read_err"):
+                flags.append("tag unreadable")
+            print(f"{head} {d['name'][:52]:<52} {mmss(d['dur']):>6}  "
+                  f"{len(d['cues']):>2} cues  {len(d['tags']):>2} tags"
+                  f"{'  · ' + ', '.join(flags) if flags else ''}", file=sys.stderr)
+
     def work(pair):
         i, t = pair
         try:
-            return inspect_track(t, args.bin, i, args.no_wave)
+            d = inspect_track(t, args.bin, i, args.no_wave)
         except Exception as e:                      # one bad file must not kill a batch
-            print(f"skip {t.name}: {e}", file=sys.stderr)
+            note(t, None, str(e))
             return None
+        note(t, d)
+        return d
 
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         docs = [d for d in ex.map(work, enumerate(tracks)) if d]
     if not docs:
         raise SystemExit("nothing could be read")
+    if not args.quiet:
+        print(f"\nread {len(docs)}/{n} in {time.monotonic()-started:.1f}s · "
+              f"{state['cues']} cues total · {state['nocues']} file(s) with none",
+              file=sys.stderr)
 
     rev = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
                           "rev-parse", "--short", "HEAD"],
