@@ -29,6 +29,8 @@ Pipe straight into the tag writer:
 import argparse
 import json
 import re
+import subprocess
+import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -57,8 +59,25 @@ def device() -> str:
 
 
 def load_audio(path: Path) -> np.ndarray:
-    """Mono audio at the model's sample rate (mp3/flac/aiff via soundfile/audioread)."""
-    y, _ = librosa.load(path, sr=SR)
+    """Mono audio at the model's sample rate.
+
+    librosa first (soundfile, then audioread), ffmpeg as the backstop: a real
+    library contains FLACs that libsndfile rejects with "unknown error in flac
+    decoder" and audioread with MacError -50, which ffmpeg decodes without
+    complaint. ~6 of 16 tracks in one sample needed this path.
+    """
+    try:
+        y, _ = librosa.load(path, sr=SR)
+        if len(y):
+            return y
+    except Exception as e:
+        print(f"  librosa could not read {path.name} ({e}); falling back to ffmpeg",
+              file=sys.stderr)
+    p = subprocess.run(["ffmpeg", "-v", "quiet", "-i", str(path), "-ac", "1",
+                        "-ar", str(SR), "-f", "f32le", "-"], capture_output=True)
+    y = np.frombuffer(p.stdout, "<f4").astype(np.float32)
+    if not len(y):
+        raise RuntimeError(f"no decodable audio in {path.name}")
     return y
 
 
@@ -293,8 +312,15 @@ def main() -> None:
     model = DetrForObjectDetection.from_pretrained(args.checkpoint).to(dev)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
+    failed = []
     for track in args.tracks:
-        y = load_audio(track)  # loaded once, reused for detection, grid and labelling
+        try:
+            y = load_audio(track)  # loaded once: detection, grid and labelling
+        except Exception as e:
+            # one unreadable file must never abort a batch — this runs unattended
+            print(f"skip {track.name}: {e}", file=sys.stderr)
+            failed.append(track.name)
+            continue
         bpm_hint = bpm_from_name(track.name)
         positions, scores = raw_detections(track, model, processor, dev, y=y)
         # keep every candidate for now — truncate only after snapping/dedupe, so
@@ -346,6 +372,12 @@ def main() -> None:
         out.write_text(json.dumps({"meta": meta, "cues": cues}, indent=2))
         summary = ", ".join(f"{n}x{l}" for l, n in Counter(labels).most_common()) if labels else "unlabelled"
         print(f"{track.name}: {len(cues)} cues @{bpm:.0f}bpm [{args.grid} {args.snap}-snap, -{dropped} too close] ({summary}) -> {out}")
+
+    if failed:
+        print(f"\n{len(failed)} of {len(args.tracks)} track(s) could not be read:",
+              file=sys.stderr)
+        for name in failed:
+            print(f"  {name}", file=sys.stderr)
 
 
 if __name__ == "__main__":

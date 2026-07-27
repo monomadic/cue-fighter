@@ -224,9 +224,14 @@ def main() -> None:
     if not tracks:
         raise SystemExit("no tracks given (positional paths or --list)")
 
-    cards = []
+    cards, skipped = [], []
     for t in tracks:
-        y = dc.load_audio(t)
+        try:
+            y = dc.load_audio(t)          # ffmpeg fallback lives in detect_cues
+        except Exception as e:
+            print(f"skip {t.name}: {e}")
+            skipped.append(t.name)
+            continue
         dur = len(y) / dc.SR
         dur_ms = dur * 1000
 
@@ -308,7 +313,10 @@ def main() -> None:
            f'<div class="legend">{legend}</div></div>'
            + "".join(cards) + f"<script>{JS}</script>")
     args.out.write_text(doc)
-    print(f"wrote {args.out}  ({args.out.stat().st_size/1024:.0f} KB, {len(tracks)} tracks)")
+    print(f"wrote {args.out}  ({args.out.stat().st_size/1024:.0f} KB, {len(cards)} tracks)")
+    if skipped:
+        print(f"{len(skipped)} track(s) skipped as unreadable: " + ", ".join(skipped[:5])
+              + (" …" if len(skipped) > 5 else ""))
     print("audio is linked (not embedded) — keep the tracks where they are, and open the")
     print("report from a local browser so file:// audio can load.")
 
