@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Make a machine able to run cue-fighter work. Idempotent: every step is a no-op
+# when already satisfied, so it is safe to drop in before any batch.
+#
+# Installs, if missing: uv, ffmpeg, the repo, a release build of cue-fighter.
+# Writes bootstrap.status next to itself; "OK" on the last line means ready.
+set -uo pipefail
+
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+LOG="$HERE/bootstrap.log"
+STATUS="$HERE/bootstrap.status"
+REPO="${CUE_FIGHTER_REPO:-$HOME/src/cue-fighter}"
+REPO_URL="${CUE_FIGHTER_REPO_URL:-https://github.com/monomadic/cue-fighter.git}"
+
+exec >>"$LOG" 2>&1
+say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+fail() { say "FAILED: $*"; printf 'FAILED: %s\n' "$*" >"$STATUS"; exit 1; }
+
+say "=== bootstrap on $(hostname -s) $(uname -m)"
+
+# --- uv (single static binary, no admin) -------------------------------------
+if command -v uv >/dev/null; then
+  say "uv present: $(uv --version)"
+else
+  say "installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh || fail "uv install"
+  command -v uv >/dev/null || fail "uv still not on PATH after install"
+  say "uv installed: $(uv --version)"
+fi
+
+# --- ffmpeg (decoding, incl. the FLACs libsndfile chokes on) -----------------
+if command -v ffmpeg >/dev/null; then
+  say "ffmpeg present: $(ffmpeg -version | head -1)"
+elif command -v brew >/dev/null; then
+  say "installing ffmpeg via brew"
+  brew install ffmpeg || fail "brew install ffmpeg"
+else
+  fail "ffmpeg missing and no brew to install it — install Homebrew or ffmpeg by hand"
+fi
+
+# --- the repo ----------------------------------------------------------------
+if [[ -d "$REPO/.git" ]]; then
+  say "repo present at $REPO, pulling"
+  git -C "$REPO" pull --ff-only || say "pull failed (continuing with the working copy)"
+else
+  say "cloning $REPO_URL -> $REPO"
+  mkdir -p "$(dirname "$REPO")"
+  git clone "$REPO_URL" "$REPO" || fail "clone"
+fi
+
+# --- cue-fighter binary ------------------------------------------------------
+BIN="$REPO/target/release/cue-fighter"
+if [[ -x "$BIN" ]] && [[ "$BIN" -nt "$REPO/src/main.rs" ]]; then
+  say "cue-fighter up to date: $($BIN --version 2>/dev/null || echo built)"
+else
+  command -v cargo >/dev/null || fail "cargo missing — install rustup, then re-run this job"
+  say "building cue-fighter (release)"
+  ( cd "$REPO" && cargo build --release ) || fail "cargo build"
+  [[ -x "$BIN" ]] || fail "build produced no binary at $BIN"
+  say "built $BIN"
+fi
+
+# --- warm the python envs so the first real job does not pay for it ----------
+say "warming uv environments"
+( cd "$REPO" && uv run --no-project --with numpy --with pillow python3 -c "pass" ) \
+  || say "warm-up failed (not fatal)"
+
+{
+  printf 'uv        %s\n' "$(uv --version 2>/dev/null)"
+  printf 'ffmpeg    %s\n' "$(ffmpeg -version 2>/dev/null | head -1 | cut -c1-40)"
+  printf 'repo      %s @ %s\n' "$REPO" "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
+  printf 'binary    %s\n' "$BIN"
+  printf 'OK\n'
+} >"$STATUS"
+say "=== bootstrap OK"

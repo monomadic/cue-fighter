@@ -102,17 +102,26 @@ has_cues() {
 }
 
 process_file() {
-  local file="$1" stem json out n
+  local file="$1" stem json out n name ext staged final
   stem="$(basename "${file%.*}")"
+  name="$(basename "$file")"
+  ext="${name##*.}"
 
   wait_until_file_stable "$file" || {
     log "not stable, skipping: $file"
     return 1
   }
 
-  if [[ "$SKIP_EXISTING" == "1" ]] && has_cues "$file"; then
-    log "already has cues, skipping: $file"
-    return 0
+  # Skip on the FINISHED artefact, not on the source. Asking "does the source
+  # already have cues?" silently produced nothing when re-running over library
+  # tracks, which all do.
+  if [[ "$SKIP_EXISTING" == "1" ]]; then
+    if [[ -n "$OUT_DIR" ]]; then
+      [[ -e "$OUT_DIR/$name" ]] && { log "output exists, skipping: $name"; return 0; }
+    elif has_cues "$file"; then
+      log "already has cues, skipping: $file"
+      return 0
+    fi
   fi
 
   mkdir -p "$JSON_DIR"
@@ -130,22 +139,30 @@ process_file() {
     return 1
   }
 
-  local -a args=(write "$file" --json "$json")
   if [[ -n "$OUT_DIR" ]]; then
-    # writing to a copy — the original is never modified, so there is nothing to
-    # back up and a .cuebak would just litter the output folder
+    # Stage under <name>.cueing.<ext> and rename on success, so whatever watches
+    # this folder never sees a copy whose tags are not written yet. The partial
+    # is still playable if you want to look at it mid-flight.
     mkdir -p "$OUT_DIR"
-    args+=(--out-dir "$OUT_DIR")
-  elif [[ "$BACKUP" == "1" ]]; then
-    args+=(--backup)
+    staged="$OUT_DIR/$stem.cueing.$ext"
+    final="$OUT_DIR/$name"
+    /bin/cp -p "$file" "$staged" || { log "copy FAILED: $file"; return 1; }
+    if ! "$BIN" write "$staged" --json "$json" >>"$LOG_FILE" 2>&1; then
+      log "write FAILED: $staged"
+      rm -f "$staged"
+      return 1
+    fi
+    /bin/mv -f "$staged" "$final" || { log "rename FAILED: $staged"; return 1; }
+  else
+    local -a args=(write "$file" --json "$json")
+    [[ "$BACKUP" == "1" ]] && args+=(--backup)
+    if ! "$BIN" "${args[@]}" >>"$LOG_FILE" 2>&1; then
+      log "write FAILED: $file"
+      return 1
+    fi
   fi
 
-  if ! "$BIN" "${args[@]}" >>"$LOG_FILE" 2>&1; then
-    log "write FAILED: $file"
-    return 1
-  fi
-
-  out="${OUT_DIR:+$OUT_DIR/}$(basename "$file")"
+  out="${OUT_DIR:+$OUT_DIR/}$name"
   n="$(/usr/bin/grep -c '"ms"' "$json" 2>/dev/null || printf 0)"
   log "wrote $n cue(s) -> ${out:-$file}"
   [[ "$KEEP_JSON" == "1" ]] || rm -f "$json"
