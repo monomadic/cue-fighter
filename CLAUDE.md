@@ -52,6 +52,10 @@ uv run evaluate.py tune  --list tracks.txt -s 0.5,0.7,0.9     # recall/precision
 # visual QA — waveform + beatgrid + cues, playable in the browser
 uv run report.py --list tracks.txt --json-dir cues/ -o report.html
 uv run report.py --list tracks.txt --json-dir new/ --compare-dir old/ -o report.html  # regression diff
+
+# tag inspector — what's embedded in the files (cues, rating, hashtags, raw tags)
+uv run inspector.py ~/Music/Tracks -o inspect.html
+uv run inspector.py ~/Music/Tracks --sidecar     # one <track>.flac.html beside each file
 ```
 
 Integration tests live in `tests/roundtrip.rs` (drive the built binary via `CARGO_BIN_EXE_cue-fighter`; each test no-ops if ffmpeg is absent). No linters or CI configured; `cargo clippy` applies.
@@ -73,6 +77,29 @@ Integration tests live in `tests/roundtrip.rs` (drive the built binary via `CARG
 - **Two write paths, by design.** `apply_cues` (parses, edits only cues, re-serializes) is the cue-editing path. `write_markers2_payload` (writes raw bytes verbatim, no parse) is the byte-faithful restore path for `import`; `write_markers2_raw` serializes an `m2` then funnels through it. Keep the cue-only invariant in `apply_cues`; keep `import`/`export` raw.
 
 - **Serato Markers2 is not the only cue source.** Real library files also carry Mixed In Key's `CUEPOINTS` (JSON: `{"cues":[{"name","time"}...],"source":"mixedinkey"}`), plus `BEATGRID`, `ENERGY`, `SERATO_BEATGRID`, `SERATO_AUTOGAIN`. Players (VirtualDJ especially) may read those in preference to ours, so `--replace` — which only clears Serato CUE entries — does NOT guarantee our cues are what the player shows. `scrub_metadata()` strips every tag (FLAC: VorbisComment/Application/Picture/CueSheet blocks; MP3: writes an empty ID3 tag) and is exposed as `--scrub`. **`--scrub` is hard-gated on `--out-dir`** so it can only ever touch a copy — keep that guard. Also note VDJ caches tags in its own database, so a path it has seen before can show stale cues regardless of file contents; test with a fresh filename.
+
+- **Two HTML tools, deliberately separate.** `report.py` judges *detection
+  quality* against manual cues, so it imports `detect_cues` — and `detect_cues`
+  has `import torch` / `from transformers import ...` at module level, meaning
+  every report drags in the whole ML stack. `inspector.py` reports *what is in
+  the files* and must stay model-free (numpy + pillow + ffmpeg). Shared pieces
+  (the `cue-fighter read` shim, time formatting, the player JS, `file://` URL
+  construction) live in `cuehtml.py`, which must never import either of them.
+  It's `inspector.py`, not `inspect.py`: a script's directory goes on `sys.path`
+  and `inspect` is a stdlib module several dependencies import.
+
+- **`file://` URLs have two silent killers**, both handled in `cuehtml.file_url`.
+  (1) Never `Path.resolve()` a track path — `~/Music/Tracks` is commonly a
+  symlink into iCloud (`~/Library/Mobile Documents/...`), and browsers cannot
+  read TCC-protected `~/Library` at all, so resolving turns every link dead.
+  Use `os.path.abspath`. (2) `#` is a fragment delimiter and must be quoted;
+  `encodeURI` does *not* escape it, and a large share of a DJ library has a
+  sharp in the key (`(126, F#m).flac`).
+
+- **Mixed In Key units are inconsistent.** `CUEPOINTS` times are in
+  **milliseconds**; `BEATGRID` beat times are in **seconds**. Cross-check
+  against a known Serato cue when in doubt — MIK `54890.37` is the same drop as
+  Serato's `54881` ms.
 
 - **Container dispatch.** `detect()` in `src/main.rs` maps extension → `Container`: mp3/aif/aiff use ID3 GEOB frames (`triseratops` + `id3` crate), flac uses the `SERATO_MARKERS_V2` Vorbis comment (`metaflac`). MP4/M4A is unsupported (no atom writer crate). Adding a format means a new `Container` variant plus its read/write arms.
 

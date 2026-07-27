@@ -88,6 +88,30 @@ Audio is *linked*, not embedded (FLACs are large), so keep the tracks in place
 and open the report locally. Each `.cues.json` carries a `meta` block recording
 the settings that produced it, which the report displays for provenance.
 
+### Tag inspector
+
+`report.py` answers "did detection do a good job?". `inspector.py` answers "what
+is actually in these files?" — hot cues from the file's own Serato tag, star
+rating, `#hashtags` from the grouping field, cover art, Mixed In Key's beatgrid /
+cuepoints / energy, and the complete raw tag dump, as one self-contained page.
+It never loads a model (numpy, pillow and ffmpeg are the whole dependency set).
+
+```sh
+uv run inspector.py ~/Music/Tracks -o inspect.html      # files, dirs, or --list
+uv run inspector.py ~/Music/Tracks --sidecar            # one <track>.flac.html each
+uv run inspector.py ~/Music/Tracks --no-wave            # skip waveforms, much faster
+```
+
+One row per file: cover, rating, bpm/key, pad count, hashtags, a tag-quality
+score, and a waveform whose colour follows the spectral mix per 4-bar phrase
+(bass-led warm, mid/vocal violet, air-led cyan). Click the waveform to seek or a
+cue marker to play from it; click a row to expand the cue table and full tag
+dump. Filter by rating or hashtag, sort by name/score/rating/bpm/cue count.
+
+`--sidecar` writes a page next to each track, expanded, with a *relative* audio
+path so a track and its sidecar survive being moved together. As with the report,
+audio is linked rather than embedded; graphics are inlined as base64.
+
 ### Checkpoint & restore your existing tags
 
 Back up every track's Serato Markers2 tag before letting anything write. Each
