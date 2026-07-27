@@ -1,0 +1,415 @@
+<!doctype html><meta charset=utf-8><title>cue-fighter tag inspector</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0a0a0a;color:#e8e8e8;
+ font:13.5px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+h1{font-size:16px;margin:0;font-weight:700;letter-spacing:-.01em}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.tnum{font-variant-numeric:tabular-nums}
+.muted{color:#7a7a7a}
+
+.top{position:sticky;top:0;z-index:50;background:#0a0a0aee;backdrop-filter:blur(8px);
+ border-bottom:1px solid #232323;padding:11px 18px;display:flex;align-items:center;gap:14px}
+.top .note{color:#7a7a7a;font-size:12px}
+.top .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.filters{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:9px 18px;
+ border-bottom:1px solid #1c1c1c;background:#0c0c0c}
+.fgrp{display:flex;gap:4px;align-items:center}
+.flabel{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#5e5e5e;margin-right:2px}
+.rbtn{background:#161616;border:1px solid #2a2a2a;color:#9a9a9a;font:600 11px/1 inherit;
+ padding:5px 8px;border-radius:5px;cursor:pointer}
+.rbtn:hover{border-color:#4a4a4a;color:#d8d8d8}
+.rbtn.on{background:#3a2d05;border-color:#ffd24d;color:#ffd24d}
+.tagchip{background:#161616;border:1px solid #2a2a2a;color:#9a9a9a;font:600 11px/1 inherit;
+ padding:5px 8px;border-radius:5px;cursor:pointer}
+.tagchip:hover{border-color:#4a4a4a;color:#d8d8d8}
+.tagchip.on{background:#062a20;border-color:#2fe884;color:#2fe884}
+.tagchip em{font-style:normal;opacity:.55;margin-left:4px}
+.fcount{margin-left:auto;font-size:11.5px;color:#7a7a7a}
+.fclear{background:none;border:0;color:#7a7a7a;font:600 11px/1 inherit;cursor:pointer;text-decoration:underline}
+.fclear:hover{color:#e8e8e8}
+select.sort{background:#161616;border:1px solid #2a2a2a;color:#c8c8c8;border-radius:5px;
+ padding:5px 7px;font:600 11px/1 inherit;cursor:pointer}
+
+/* stars + hashtags */
+.stars{letter-spacing:1px;font-size:11.5px;line-height:1;color:#3a3a3a;white-space:nowrap}
+.stars b{color:#ffd24d;font-weight:400;text-shadow:0 0 6px #ffd24d66}
+.htags{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.htag{font-size:10px;padding:1px 5px;border-radius:3px;background:#14201c;border:1px solid #24413a;
+ color:#5fd3a6;white-space:nowrap;cursor:pointer}
+.htag:hover{border-color:#2fe884;color:#2fe884}
+.htag.more{background:#181818;border-color:#2a2a2a;color:#7a7a7a;cursor:default}
+.empty{padding:26px;text-align:center;color:#6a6a6a;font-size:12.5px}
+.top input{background:#141414;border:1px solid #2a2a2a;color:#e8e8e8;border-radius:6px;
+ padding:6px 10px;font:12px inherit;width:230px}
+.top input:focus{outline:0;border-color:#4a4a4a}
+.page{padding:14px 18px 60px}
+
+/* ---------------- chips ---------------- */
+.chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.chip{font-size:11px;padding:2px 7px;border-radius:4px;background:#181818;border:1px solid #292929;
+ color:#a8a8a8;white-space:nowrap}
+.chip b{color:#e8e8e8;font-weight:700}
+.chip.pads{display:inline-flex;align-items:center;gap:5px;padding:2px 7px 2px 5px;
+ font-variant-numeric:tabular-nums;font-weight:700}
+.padicon{width:12px;height:12px;flex:none;opacity:.9}
+.chip.warn{border-color:#6b3d0d;color:#ffa53d;background:#1e1305}
+.chip.ok{border-color:#186a3a;color:#2fe884;background:#08190f}
+
+/* ---------------- score ---------------- */
+.score{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+ font:700 12px/1 inherit;position:relative;cursor:help;
+ background:conic-gradient(var(--sc) calc(var(--p)*1%),#1e1e1e 0);z-index:5;
+ /* box-shadow, not drop-shadow: a filter would apply to the tooltip child too and
+    make this a stacking context that traps the tooltip's z-index */
+ box-shadow:0 0 7px color-mix(in srgb,var(--sc) 40%,transparent)}
+.score:hover{z-index:60}
+/* direct child only — a bare `.score i` also caught the bar fills inside the tooltip */
+.score > i{position:absolute;inset:3px;border-radius:50%;background:#0f0f0f;display:grid;
+ place-items:center;font-style:normal;color:var(--sc)}
+.score .tip{position:absolute;left:44px;top:-8px;z-index:80;display:none;width:252px;
+ background:#171717;border:1px solid #343434;border-radius:8px;padding:10px 12px;
+ font:11.5px/1.6 inherit;color:#c8c8c8;box-shadow:0 10px 34px #000e;filter:none}
+.score.up .tip{top:auto;bottom:-8px}
+.score:hover .tip{display:block}
+.score .tip b{color:#fff}
+.bar{position:relative;height:4px;border-radius:2px;background:#242424;margin:3px 0 7px;overflow:hidden}
+.bar > i{position:static;display:block;height:100%;border-radius:2px;background:var(--sc);inset:auto}
+
+/* ---------------- waveform + cues ---------------- */
+.wave{position:relative;width:100%;background:#0d0d0d;border-radius:4px;overflow:hidden;cursor:pointer}
+.wave img{display:block;width:100%;height:100%;image-rendering:auto}
+.wave .grid{position:absolute;inset:0;pointer-events:none;
+ background-image:repeating-linear-gradient(90deg,#ffffff12 0 1px,transparent 1px var(--bar))}
+.ph{position:absolute;top:0;bottom:0;width:1.5px;background:#fff;opacity:0;pointer-events:none;
+ box-shadow:0 0 7px #fff9}
+.playing .ph{opacity:.95}
+/* played-so-far wash, VirtualDJ songpos style */
+.prog{position:absolute;left:0;top:0;bottom:0;width:0;pointer-events:none;
+ background:#ffffff2e;border-right:1px solid #ffffff33}
+.cues{position:absolute;inset:0}
+/* the hovered cue must outrank *sibling cues*, not just its own children —
+   raising only .nm left labels painting under the next marker along */
+.cue{position:absolute;top:0;bottom:0;width:13px;margin-left:-6px;cursor:pointer;z-index:2}
+.cue:hover{z-index:40}
+/* 1px dark outline keeps cue ticks legible against the RGB waveform */
+.cue .tk{position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--c);
+ box-shadow:0 0 0 1px #000000cc}
+.cue .fl{position:absolute;left:6px;top:0;width:7px;height:7px;background:var(--c);
+ clip-path:polygon(0 0,100% 0,0 100%)}
+.cue:hover .tk{opacity:1;width:3px;box-shadow:0 0 8px var(--c)}
+.cue .nm{position:absolute;left:9px;bottom:4px;display:none;white-space:nowrap;
+ background:var(--c);color:#0a0a0a;font:700 10px/1.5 inherit;padding:1px 5px;border-radius:3px;
+ box-shadow:0 2px 10px #000c}
+.cue.r .nm{left:auto;right:9px}
+.cue:hover .nm{display:block}
+
+/* ---------------- rows ---------------- */
+/* NOT overflow:hidden — it clipped the score tooltip. Corners are rounded per-row. */
+.sheet{border:1px solid #232323;border-radius:9px;background:#101010}
+.sheet > .srow:first-child{border-radius:9px 9px 0 0}
+.sheet > .srow:last-child{border-radius:0 0 9px 9px;border-bottom:0}
+.srow{display:grid;grid-template-columns:68px minmax(180px,232px) 42px 1fr 82px 52px;gap:12px;
+ align-items:center;padding:7px 12px;border-bottom:1px solid #1b1b1b;cursor:pointer}
+.srow:hover{background:#151515}
+.srow.open{background:#151515}
+.cover{border-radius:4px;display:block;background:#1a1a1a;object-fit:cover}
+.nm2{min-width:0}
+.nm2 .t{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nm2 .a{color:#8a8a8a;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pb{width:44px;height:44px;border-radius:50%;border:1px solid #333;background:#1a1a1a;
+ color:#e8e8e8;display:grid;place-items:center;cursor:pointer;justify-self:end;
+ transition:background .13s,border-color .13s,transform .13s,box-shadow .13s}
+.pb svg{width:15px;height:15px;fill:currentColor;margin-left:2px}
+.pb:hover{background:#2b2b2b;border-color:#585858;transform:scale(1.06)}
+.pb:active{transform:scale(.96)}
+.playing .pb{background:#e8e8e8;color:#0a0a0a;border-color:#e8e8e8;box-shadow:0 0 0 4px #ffffff14}
+.playing .pb svg{margin-left:0}
+.right{text-align:right;font-size:11px;color:#8a8a8a;line-height:1.45}
+.right .tm{color:#c8c8c8;font-size:11.5px}
+.dead .tm{color:#ff4d6a}
+.dead .pb{opacity:.45}
+
+/* ---------------- expanded ---------------- */
+.expand{padding:2px 12px 18px 92px;border-bottom:1px solid #232323;background:#0d0d0d}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:14px}
+@media(max-width:980px){.cols{grid-template-columns:1fr}}
+.grp{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#6a6a6a;
+ margin:14px 0 6px;padding-bottom:3px;border-bottom:1px solid #232323}
+table.ct{border-collapse:collapse;width:100%;font-size:12px}
+table.ct th{text-align:left;color:#6a6a6a;font-weight:600;font-size:10px;text-transform:uppercase;
+ letter-spacing:.05em;padding:4px 8px;border-bottom:1px solid #232323}
+table.ct td{padding:3px 8px;border-bottom:1px solid #1a1a1a}
+table.ct tr[data-t]{cursor:pointer}
+table.ct tr:hover td{background:#181818}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+.md{display:grid;grid-template-columns:max-content 1fr;gap:2px 14px;font-size:12px;align-items:baseline}
+.md dt{color:#6a6a6a;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.md dd{margin:0;overflow-wrap:anywhere}
+.md dd.b64{color:#5c5c5c;cursor:pointer}
+.md dd.b64:hover{color:#a8a8a8}
+audio{display:none}
+</style>
+
+<div class="top">
+  <h1>cue-fighter · tag inspector</h1>
+  <span class="note" id="sub"></span>
+  <div class="right"><input id="fb" placeholder="filter…"></div>
+</div>
+<div class="filters" id="filters"></div>
+<div class="page"><div class="sheet" id="page"></div></div>
+
+<script>
+const DATA = /*__DATA__*/null;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mmss = s => Math.floor(Math.abs(s)/60) + ':' + String(Math.floor(Math.abs(s)%60)).padStart(2,'0');
+const mmssms = ms => mmss(ms/1000) + '.' + String(Math.abs(Math.round(ms))%1000).padStart(3,'0');
+const kb = n => n > 1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(0)+' KB';
+const tag = (t,k) => { const kk = Object.keys(t.tags).find(x => x.toUpperCase() === k); return kk ? t.tags[kk] : ''; };
+const title = t => tag(t,'TITLE') || t.name.replace(/\.[^.]+$/,'');
+const artist = t => tag(t,'ARTIST') || tag(t,'ALBUMARTIST') || '—';
+const bpm = t => tag(t,'BPM') || (t.beatgrid ? t.beatgrid.tempo.toFixed(0) : '') || (t.name.match(/\((\d{2,3}),/)||[])[1] || '?';
+// library uses 0/20/40/60/80/100; POPM-style 0-255 also normalises cleanly
+const stars = t => { const v = parseFloat(tag(t,'RATING')); if (!v) return 0;
+  return Math.min(5, Math.round(v > 100 ? v/51 : v/20)); };
+const hashes = t => (tag(t,'GROUPING').match(/#[^\s#]+/g) || []);
+// 3x3 pad grid — the count is out of 16 by definition, so the icon carries the unit
+const PAD_ICON = `<svg class="padicon" viewBox="0 0 16 16" aria-hidden="true">
+  <rect x="1.4" y="1.4" width="13.2" height="13.2" rx="3.4" fill="none"
+    stroke="currentColor" stroke-width="1.7"/>
+  ${[4,7.5,11].flatMap(y => [4,7.5,11].map(x =>
+    `<rect x="${x-1}" y="${y-1}" width="2" height="2" rx=".55" fill="currentColor"/>`)).join('')}
+</svg>`;
+const keyOf = t => tag(t,'INITIALKEY') || (t.mikkey && t.mikkey.key) || (t.name.match(/,\s*([A-G][#b]?m?)\)/)||[])[1] || '?';
+
+/* ------------------------------------------------------------------ score */
+const VOCAB = ['INTRO','OUTRO','DROP','BREAK','BUILD','CUT','MIX IN','MIX OUT','VOCAL'];
+const CORE = ['TITLE','ARTIST','ALBUM','DATE','GENRE','BPM','INITIALKEY','LABEL','ENERGYLEVEL'];
+function score(t) {
+  const n = t.cues.length;
+  // cues (40) — 16 pads is full marks, 8 is half; empty pads are the biggest single loss
+  const cues = Math.min(n,16)/16*40;
+  // labels (25) — share of cues whose label matches the house vocabulary
+  const named = t.cues.filter(c => c.label && VOCAB.some(v => c.label.toUpperCase().startsWith(v)));
+  const labels = n ? named.length/n*25 : 0;
+  // tagging (25) — core fields present, plus cover art
+  const have = CORE.filter(k => tag(t,k)).length;
+  const tags = (have/CORE.length*20) + (t.cover ? 5 : 0);
+  // analysis (10) — beatgrid / autogain present so players agree with us
+  const an = (t.beatgrid?5:0) + (tag(t,'SERATO_BEATGRID')?3:0) + (tag(t,'SERATO_AUTOGAIN')?2:0);
+  const total = Math.round(cues+labels+tags+an);
+  const col = total>=85?'#2fe884':total>=65?'#ffe14d':total>=45?'#ff9f2e':'#ff4d6a';
+  return {total, col, parts:[['cue coverage',cues,40,`${n}/16 pads used`],
+    ['label discipline',labels,25,n?`${named.length}/${n} match ${VOCAB.slice(0,5).join('/')}…`:'no cues'],
+    ['tagging',tags,25,`${have}/${CORE.length} core fields${t.cover?' + art':', no art'}`],
+    ['analysis data',an,10,[t.beatgrid?'grid':null,tag(t,'SERATO_BEATGRID')?'serato grid':null,
+      tag(t,'SERATO_AUTOGAIN')?'gain':null].filter(Boolean).join(', ')||'none']]};
+}
+function scoreEl(t, up) {
+  const s = score(t);
+  return `<div class="score ${up?'up':''}" style="--sc:${s.col};--p:${s.total}"><i>${s.total}</i>
+    <div class="tip"><b>${s.total}/100</b> — ${esc(title(t))}
+      ${s.parts.map(([k,v,max,note]) => `<div style="margin-top:6px">${k}
+        <span style="float:right">${v.toFixed(0)}/${max}</span>
+        <div class="bar" style="--sc:${s.col}"><i style="width:${v/max*100}%"></i></div>
+        <span class="muted" style="font-size:10.5px">${esc(note)}</span></div>`).join('')}
+    </div></div>`;
+}
+
+/* --------------------------------------------------------------- waveform */
+const src = p => 'file://' + encodeURI(p).replace(/#/g, '%23');   // '#' is a fragment, not a path char
+function gridOverlay(t) {                     // 4-bar lines, from the embedded MIK grid
+  if (!t.beatgrid) return '';
+  const bar4 = 16 * 60 / t.beatgrid.tempo;    // seconds per 4 bars
+  return `<div class="grid" style="--bar:${(bar4/t.dur*100).toFixed(4)}%"></div>`;
+}
+function cueMarks(t) {
+  return t.cues.slice().sort((a,b)=>a.ms-b.ms).map(c => {
+    const pct = 100*c.ms/1000/t.dur;
+    return `<div class="cue ${pct>82?'r':''}" data-t="${(c.ms/1000).toFixed(3)}" style="left:${pct.toFixed(3)}%;--c:#${c.color||'888888'}">
+      <span class="tk"></span><span class="fl"></span>
+      <span class="nm">${c.index+1} ${esc(c.label||'cue')} · ${mmss(c.ms/1000)}</span></div>`;
+  }).join('');
+}
+function waveBlock(t, h) {
+  return `<div class="wave" style="height:${h}px" data-dur="${t.dur}">
+    <img src="${t.wave}" alt="">${gridOverlay(t)}<div class="prog"></div>
+    <div class="cues">${cueMarks(t)}</div><div class="ph"></div></div>`;
+}
+
+/* ------------------------------------------------------------ detail bits */
+const GROUPS = [
+  ['identity', ['TITLE','ARTIST','ALBUMARTIST','ALBUM','SUBTITLE','VERSION','DATE','GENRE','LABEL',
+                'PUBLISHER','ISRC','CATALOGNUMBER','TRACKNUMBER','TOTALTRACKS','COMPOSER','GROUPING','COMMENT','ENCODER']],
+  ['analysis', ['BPM','KEY','INITIALKEY','ENERGY','ENERGYLEVEL','RATING','COLOR','LENGTH','BEATGRID','CUEPOINTS']],
+  ['serato',   ['SERATO_MARKERS_V2','SERATO_MARKERS2','SERATO_BEATGRID','SERATO_AUTOGAIN','SERATO_OVERVIEW','SERATO_ANALYSIS']],
+];
+function metaBlocks(t) {
+  const keys = Object.keys(t.tags), used = new Set();
+  const rows = ks => ks.map(k => {
+    const real = keys.find(x => x.toUpperCase() === k); if (!real) return '';
+    used.add(real); const v = t.tags[real] || '';
+    const big = v.length > 90;
+    return `<dt>${esc(real.toLowerCase())}</dt><dd class="${big?'b64 mono':''}" ${big?`data-full="${esc(v)}"`:''}>${
+      big ? `⟨base64 · ${v.length} chars⟩` : esc(v) || '<span class="muted">empty</span>'}</dd>`;
+  }).join('');
+  let html = '';
+  for (const [name, ks] of GROUPS) { const r = rows(ks); if (r) html += `<div class="grp">${name}</div><dl class="md">${r}</dl>`; }
+  const rest = keys.filter(k => !used.has(k));
+  if (rest.length) html += `<div class="grp">other (${rest.length})</div><dl class="md">${rows(rest.map(k=>k.toUpperCase()))}</dl>`;
+  html += `<div class="grp">decoded blobs</div><dl class="md">
+    <dt>rating</dt><dd>${stars(t) ? `<span class="stars">${'<b>★</b>'.repeat(stars(t))}${
+      '★'.repeat(5-stars(t))}</span> &nbsp;<span class="muted">(${esc(tag(t,'RATING'))}/100)</span>`
+      : '<span class="muted">unrated</span>'}</dd>
+    <dt>hashtags</dt><dd>${hashes(t).length ? `<span class="htags" style="display:inline-flex">${
+      hashes(t).map(h => `<span class="htag" data-tag="${esc(h)}">${esc(h)}</span>`).join('')}</span>`
+      : '<span class="muted">none</span>'}</dd>
+    <dt>beatgrid</dt><dd>${t.beatgrid ? `MIK algo ${t.beatgrid.algorithm} · ${t.beatgrid.tempo.toFixed(3)} bpm · ${t.beatgrid.n_beats} beats` : '<span class="muted">none</span>'}</dd>
+    <dt>mik cues</dt><dd>${t.mik&&t.mik.cues.length ? t.mik.cues.map(c=>`${esc(c.name||'?')}@${mmss(c.time)}`).join(', ') : '<span class="muted">none</span>'}</dd>
+    <dt>energy</dt><dd>${t.energy ? `level ${t.energy.energyLevel} (algo ${t.energy.algorithm})` : '<span class="muted">none</span>'}</dd>
+    <dt>audio</dt><dd>${esc(t.audio.codec_name)} · ${t.audio.sample_rate} Hz · ${t.audio.channels} ch${
+      t.audio.bits_per_raw_sample?' · '+t.audio.bits_per_raw_sample+' bit':''} · ${kb(t.size)}</dd>
+    <dt>path</dt><dd class="mono" style="font-size:11px">${esc(t.path)}</dd></dl>`;
+  return html;
+}
+function cueTable(t) {
+  const beat = 60/(t.beatgrid ? t.beatgrid.tempo : (parseFloat(bpm(t))||120));
+  const rows = t.cues.slice().sort((a,b)=>a.index-b.index).map(c => `<tr data-t="${(c.ms/1000).toFixed(3)}">
+      <td class="tnum">${c.index+1}</td><td class="tnum mono">${mmssms(c.ms)}</td>
+      <td class="tnum muted">${(c.ms/1000/beat/4+1).toFixed(2)}</td>
+      <td><span class="sw" style="background:#${c.color||'888'}"></span><span class="mono muted">${esc(c.color||'—')}</span></td>
+      <td>${esc(c.label||'')}</td></tr>`).join('');
+  const mik = (t.mik?t.mik.cues:[]).map(c => `<tr data-t="${c.time.toFixed(3)}"><td class="muted">·</td>
+      <td class="tnum mono muted">${mmssms(c.time*1000)}</td><td></td><td class="muted">MIK</td>
+      <td class="muted">${esc(c.name||'')}</td></tr>`).join('');
+  return `<table class="ct"><tr><th>pad</th><th>time</th><th>bar</th><th>colour</th><th>label</th></tr>
+    ${rows||'<tr><td colspan=5 class="muted">no serato cues</td></tr>'}${mik}</table>`;
+}
+
+/* --------------------------------------------------------------- filters */
+const F = {q:'', minStars:0, tags:new Set(), sort:'name'};
+const TAGS = (() => {                       // hashtag vocabulary, most used first
+  const n = new Map();
+  DATA.forEach(t => hashes(t).forEach(h => n.set(h, (n.get(h)||0)+1)));
+  return [...n].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+})();
+const SORTS = {name:'name', score:'score', rating:'rating', bpm:'bpm', cues:'cue count'};
+
+function matches(t) {
+  if (stars(t) < F.minStars) return false;
+  // multiple tags narrow (AND) — stacking #Club + #BassHouse is the common case
+  const h = hashes(t);
+  if (![...F.tags].every(x => h.includes(x))) return false;
+  const q = F.q.toLowerCase();
+  return !q || (t.name + ' ' + artist(t) + ' ' + tag(t,'GROUPING')).toLowerCase().includes(q);
+}
+function ordered(rows) {
+  const key = {name: r => title(r.t).toLowerCase(), score: r => -score(r.t).total,
+               rating: r => -stars(r.t), bpm: r => parseFloat(bpm(r.t))||0,
+               cues: r => -r.t.cues.length}[F.sort];
+  return rows.slice().sort((a,b) => { const x = key(a), y = key(b);
+    return typeof x === 'string' ? x.localeCompare(y) : x - y; });
+}
+function drawFilters(shown) {
+  document.getElementById('filters').innerHTML = `
+    <div class="fgrp"><span class="flabel">rating</span>
+      ${[0,3,4,5].map(n => `<button class="rbtn ${F.minStars===n?'on':''}" data-stars="${n}">${
+        n ? '★'.repeat(n) + (n<5?'+':'') : 'any'}</button>`).join('')}</div>
+    ${TAGS.length ? `<div class="fgrp"><span class="flabel">tags</span>
+      ${TAGS.map(([h,n]) => `<button class="tagchip ${F.tags.has(h)?'on':''}" data-tag="${esc(h)}">${
+        esc(h)}<em>${n}</em></button>`).join('')}</div>` : ''}
+    <div class="fgrp"><span class="flabel">sort</span>
+      <select class="sort" id="sortsel">${Object.entries(SORTS).map(([k,v]) =>
+        `<option value="${k}" ${F.sort===k?'selected':''}>${v}</option>`).join('')}</select></div>
+    <span class="fcount">${shown} of ${DATA.length}${
+      (F.minStars||F.tags.size||F.q) ? ' · <button class="fclear" id="fclear">clear</button>' : ''}</span>`;
+}
+
+/* ------------------------------------------------------------------ view */
+const open = new Set();
+function render() {
+  const rows = ordered(DATA.map((t,i) => ({t,i})).filter(r => matches(r.t)));
+  const med = [...DATA].map(score).map(s=>s.total).sort((a,b)=>a-b)[DATA.length>>1];
+  document.getElementById('sub').textContent = `${DATA.length} files · median score ${med}`;
+  drawFilters(rows.length);
+  document.getElementById('page').innerHTML = (rows.length ? rows.map(({t,i}) => `
+    <div class="srow ${open.has(i)?'open':''}" data-row="${i}">
+      ${t.cover?`<img class="cover" src="${t.cover}" width="68" height="68">`
+               :'<div class="cover" style="width:68px;height:68px"></div>'}
+      <div class="nm2"><div class="t">${esc(title(t))}</div><div class="a">${esc(artist(t))}</div>
+        <div class="chips" style="margin-top:4px">
+          <span class="stars" title="${stars(t) ? stars(t)+' / 5' : 'unrated'}">${
+            '<b>★</b>'.repeat(stars(t))}${'★'.repeat(5-stars(t))}</span>
+          <span class="chip">${bpm(t)} bpm</span>
+          <span class="chip">${esc(keyOf(t))}</span>
+          <span class="chip pads ${t.cues.length>=8?'ok':'warn'}"
+            title="${t.cues.length} of 16 hot cue pads used">${PAD_ICON}${t.cues.length}</span></div>
+        ${hashes(t).length ? `<div class="htags">${hashes(t).slice(0,3).map(h =>
+          `<span class="htag" data-tag="${esc(h)}">${esc(h)}</span>`).join('')}${
+          hashes(t).length>3?`<span class="htag more">+${hashes(t).length-3}</span>`:''}</div>` : ''}</div>
+      ${scoreEl(t, i >= DATA.length - 2)}
+      ${waveBlock(t, 62)}
+      <div class="right"><span class="tm tnum">${mmss(t.dur)}</span><br>
+        ${Object.keys(t.tags).length} tags${t.mik&&t.mik.cues.length?'<br>'+t.mik.cues.length+' MIK':''}</div>
+      <button class="pb"><svg viewBox="0 0 16 16"><path d="M3 1.5l11 6.5-11 6.5z"/></svg></button>
+      <audio preload="none" src="${src(t.path)}"></audio>
+    </div>
+    ${open.has(i)?`<div class="expand">
+      <div class="cols"><div><div class="grp">cue points</div>${cueTable(t)}</div>
+      <div>${metaBlocks(t)}</div></div></div>`:''}`).join('')
+    : '<div class="empty">no files match these filters</div>');
+  wire();
+}
+function wire() {
+  document.querySelectorAll('.srow').forEach(row => {
+    const i = +row.dataset.row, t = DATA[i];
+    const a = row.querySelector('audio'), wv = row.querySelector('.wave'),
+          ph = row.querySelector('.ph'), pb = row.querySelector('.pb'),
+          pr = row.querySelector('.prog'),
+          tm = row.querySelector('.tm'), exp = row.nextElementSibling;
+    const ICON = {play:'M3 1.5l11 6.5-11 6.5z', pause:'M3 1.5h4v13H3zm6 0h4v13H9z'};
+    const fail = why => { tm.textContent = 'no audio'; tm.title = why; row.classList.add('dead'); };
+    const seek = s => { document.querySelectorAll('audio').forEach(o => o!==a && o.pause());
+      a.currentTime = Math.max(0, Math.min(t.dur-0.05, s));
+      a.play().catch(e => fail(e.message || 'playback refused')); };
+    wv.onclick = e => { e.stopPropagation();
+      const c = e.target.closest('.cue');
+      if (c) return seek(+c.dataset.t);
+      const r = wv.getBoundingClientRect(); seek((e.clientX-r.left)/r.width*t.dur); };
+    pb.onclick = e => { e.stopPropagation(); a.paused ? seek(a.currentTime||0) : a.pause(); };
+    a.onplay  = () => { row.classList.add('playing'); pb.firstChild.firstChild.setAttribute('d', ICON.pause); };
+    a.onpause = () => { row.classList.remove('playing'); pb.firstChild.firstChild.setAttribute('d', ICON.play); };
+    a.onerror = () => fail(a.error ? a.error.message || 'load failed' : 'load failed');
+    a.ontimeupdate = () => { const p = (a.currentTime/t.dur*100).toFixed(3)+'%';
+      ph.style.left = p; pr.style.width = p; tm.textContent = mmss(a.currentTime); };
+    row.onclick = e => { if (e.target.closest('.wave,.pb,.score')) return;
+      open.has(i) ? open.delete(i) : open.add(i); render(); };
+    // expanded cue rows seek too
+    if (exp && exp.classList.contains('expand'))
+      exp.querySelectorAll('[data-t]').forEach(el => el.onclick = () => seek(+el.dataset.t));
+  });
+  document.querySelectorAll('dd.b64').forEach(d => d.onclick = e => { e.stopPropagation();
+    d.textContent = d.dataset.full; d.style.maxHeight='140px'; d.style.overflow='auto'; d.classList.remove('b64'); });
+  // clicking a hashtag on a row toggles it as a filter
+  document.querySelectorAll('.htag[data-tag]').forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    const h = el.dataset.tag;
+    F.tags.has(h) ? F.tags.delete(h) : F.tags.add(h);
+    render();
+  });
+  document.querySelectorAll('.rbtn').forEach(b => b.onclick = () => { F.minStars = +b.dataset.stars; render(); });
+  document.querySelectorAll('.tagchip').forEach(b => b.onclick = () => {
+    const h = b.dataset.tag; F.tags.has(h) ? F.tags.delete(h) : F.tags.add(h); render(); });
+  const sel = document.getElementById('sortsel');
+  if (sel) sel.onchange = () => { F.sort = sel.value; render(); };
+  const clr = document.getElementById('fclear');
+  if (clr) clr.onclick = () => { F.q=''; F.minStars=0; F.tags.clear();
+    document.getElementById('fb').value=''; render(); };
+  const fb = document.getElementById('fb');
+  // rebinding on every render would reset focus, so bind the search box once
+  if (fb && !fb.dataset.bound) { fb.dataset.bound = '1';
+    fb.oninput = () => { F.q = fb.value; render(); fb.focus(); }; }
+}
+render();
+</script>
