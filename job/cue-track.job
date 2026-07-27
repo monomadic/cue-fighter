@@ -35,11 +35,6 @@ say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 die() { say "FAILED: $*"; printf '%s: %s\n' "$(basename "$SELF")" "$*" >&2; exit 1; }
 
 TARGET="${SELF%.job}"                       # my-song.untagged.flac
-# tolerate a priority prefix: "JOB-01 my-song.flac.job" still targets my-song.flac
-if [[ ! -f "$TARGET" ]]; then
-  stripped="$(dirname "$TARGET")/$(basename "$TARGET" | sed -E 's/^JOB-[0-9]+[[:space:]_-]+//')"
-  [[ -f "$stripped" ]] && TARGET="$stripped"
-fi
 DIR="$(dirname "$TARGET")"
 NAME="$(basename "$TARGET")"
 EXT="${NAME##*.}"
