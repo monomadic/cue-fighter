@@ -26,11 +26,20 @@ REPO="${CUE_FIGHTER_REPO:-$HOME/src/cue-fighter}"
 
 SELF="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 LOG="$SELF.log"
-exec >>"$LOG" 2>&1
+# stdout -> our own log; stderr is left ALONE, all the way down to the tools we
+# call. Headless, stderr is the only feedback channel there is: swallowing it
+# hands the runner a bare "detection failed" with the reason hidden in a file
+# nobody is watching.
+exec >>"$LOG"
 say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
-die() { say "FAILED: $*"; exit 1; }
+die() { say "FAILED: $*"; printf '%s: %s\n' "$(basename "$SELF")" "$*" >&2; exit 1; }
 
 TARGET="${SELF%.job}"                       # my-song.untagged.flac
+# tolerate a priority prefix: "JOB-01 my-song.flac.job" still targets my-song.flac
+if [[ ! -f "$TARGET" ]]; then
+  stripped="$(dirname "$TARGET")/$(basename "$TARGET" | sed -E 's/^JOB-[0-9]+[[:space:]_-]+//')"
+  [[ -f "$stripped" ]] && TARGET="$stripped"
+fi
 DIR="$(dirname "$TARGET")"
 NAME="$(basename "$TARGET")"
 EXT="${NAME##*.}"
