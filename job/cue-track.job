@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Detect cue points for ONE track and write them into a tagged copy.
+#
+# Copy this script next to the audio file and rename it after that file:
+#
+#   my-song.untagged.flac        input
+#   my-song.untagged.flac.job    this script, renamed  ->  strips .job to find its target
+#   my-song.flac                 output, tagged
+#
+# The output has no .job beside it, so nothing will pick it up again. Nothing
+# scans, nothing decides: the filename is the whole contract.
+#
+# Parameters are literals below rather than config, so the copy in _done is an
+# exact record of how this file was produced.
+set -uo pipefail
+
+PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+SENSITIVITY=0.7
+RADIUS=16
+MAX_CUES=16
+SNAP=beat
+MIN_GAP_BEATS=4
+MARKER=".untagged"                 # stripped from the output name, if present
+REPO="${CUE_FIGHTER_REPO:-$HOME/src/cue-fighter}"
+
+SELF="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+LOG="$SELF.log"
+exec >>"$LOG" 2>&1
+say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+die() { say "FAILED: $*"; exit 1; }
+
+TARGET="${SELF%.job}"                       # my-song.untagged.flac
+DIR="$(dirname "$TARGET")"
+NAME="$(basename "$TARGET")"
+EXT="${NAME##*.}"
+STEM="${NAME%.*}"                           # my-song.untagged
+OUT_STEM="${STEM%$MARKER}"                  # my-song
+STAGE="$DIR/$OUT_STEM.cueing.$EXT"          # visible, playable, obviously partial
+FINAL="$DIR/$OUT_STEM.$EXT"
+JSON="$DIR/$OUT_STEM.cues.json"
+
+BIN="$REPO/target/release/cue-fighter"
+
+say "=== $NAME"
+[[ -f "$TARGET" ]] || die "no such file: $TARGET"
+[[ -x "$BIN" ]] || die "cue-fighter not built at $BIN (run bootstrap.job)"
+command -v uv >/dev/null || die "uv not on PATH (run bootstrap.job)"
+[[ -e "$FINAL" ]] && die "output already exists, refusing to clobber: $FINAL"
+
+say "detecting (-s $SENSITIVITY -r $RADIUS --snap $SNAP --min-gap-beats $MIN_GAP_BEATS)"
+uv run "$REPO/detect_cues.py" "$TARGET" -o "$DIR" \
+  -s "$SENSITIVITY" -r "$RADIUS" --max-cues "$MAX_CUES" \
+  --snap "$SNAP" --min-gap-beats "$MIN_GAP_BEATS" || die "detection"
+
+# detect_cues names its output after the input stem
+[[ -f "$DIR/$STEM.cues.json" ]] || die "no cues json produced"
+[[ "$STEM" != "$OUT_STEM" ]] && mv -f "$DIR/$STEM.cues.json" "$JSON"
+
+cp -p "$TARGET" "$STAGE" || die "copy to stage"
+if ! "$BIN" write "$STAGE" --json "$JSON"; then
+  rm -f "$STAGE"
+  die "writing cues"
+fi
+mv -f "$STAGE" "$FINAL" || die "rename into place"
+
+say "wrote $(grep -c '"ms"' "$JSON") cue(s) -> $(basename "$FINAL")"
+say "repo @ $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+say "=== done"
