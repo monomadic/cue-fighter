@@ -51,6 +51,68 @@ picked up by VirtualDJ. Detection quality first, plumbing second, models last.
   CUE-DETR tuning. Phase 3 snapping remains worthwhile for playability but is
   not the coverage fix.
 
+## Phase 1b — the embedded-MIK baseline (measured 2026-07-27)
+
+Found via the tag inspector: most library files already carry Mixed In Key
+`CUEPOINTS` and `BEATGRID`. Measured on 194 tracks with both MIK cues and manual
+cues (1,733 manual cues), 1-beat tolerance, no model involved:
+
+- **MIK cuepoints alone: 55% recall / 64% precision** — better than CUE-DETR's
+  tuned best (45% / 44%). Coverage: MIK cuepoints in 76% of files, beatgrid 75%,
+  manual cues 91%. Mean 8.8 manual cues vs 7.6 MIK cuepoints per track.
+- **93% of the hits land within 50 ms**, so these manual cues were largely
+  *derived from* MIK, not independently placed. Predicting them is partly
+  circular — the real target is the residual.
+- MIK's beatgrid (tempo + beat list) is a better grid than librosa's tracker and
+  is free, which changes the calculus on Phase 3's downbeat-tracker item.
+
+**The residual (781 of 1,733 cues) is mostly geometry around drops**, by label —
+total / MIK-covered / residual:
+
+| label | n | MIK hit rate | | label | n | MIK hit rate |
+|---|---|---|---|---|---|---|
+| DROP | 384 | 73% | | OUTRO | 111 | 14% |
+| CUT | 200 | **6%** | | MIX IN | 90 | 61% |
+| ENERGY | 196 | 96% | | CHORUS | 79 | 59% |
+| INTRO | 181 | 70% | | BREAK | 76 | 68% |
+| BUILD | 133 | 41% | | VERSE | 61 | 51% |
+
+- **CUT is the biggest single gap and is near-deterministic**: 197 of 215 CUTs
+  are immediately followed by a DROP, at a quantised offset — 4 beats (66%) or
+  8 beats (25%) before it. But only 43% of drops have one, so a blanket rule
+  over-fires ~2x.
+- **BUILD**: 32 beats before the drop (49%) or 16 (18%); present before 26% of
+  drops.
+- **OUTRO**: median 92% of track position (10th–90th pct: 84–98%).
+- MIK's `Energy N` numbers do *not* identify labels — best signal is a +2 energy
+  step → DROP only 45% of the time. MIK gives positions, not structure.
+
+**Oracle test of "derive instead of detect" — mostly negative.** Given the
+*true* drops (an upper bound no detector can beat), adding geometric satellites
+under real pipeline constraints (1-bar min gap, 16-pad cap, 1-beat tolerance):
+
+| source | recall | precision |
+|---|---|---|
+| MIK alone | 54.4% | 64.4% |
+| MIK + CUT@4 | 59.1% | 57.4% |
+| MIK + CUT@4 + BUILD@32 | 61.3% | 52.5% |
+| MIK + CUT@4,8 + BUILD@32 + OUTRO | 61.2% | 44.9% |
+| satellites only | 13.6% | 25.3% |
+| oracle drops only | 22.2% | 100% |
+
+So derivation buys ~+5 recall for ~−7 precision *with perfect drops*, and the
+fourth row is strictly harmful — extra guesses displace real cues under the
+16-pad cap. The earlier "197 of 215 CUTs sit 4–8 beats before a drop" is a fact
+about CUTs, not about drops: only **43% of drops carry a CUT**, and that rate is
+flat across drop index (45/43/48/39%), track position and inter-drop spacing —
+no feature tested predicts *which* drops get one.
+
+**Implication.** Placement of a CUT is solved (it is 4 or 8 beats before the
+drop, 91% of the time). The unsolved half is the *decision* to place one — a
+small, well-posed binary classification over drops, with ~8k labelled examples
+in the library, rather than a general detection problem. Satellite derivation
+ships as an opt-in flag, not a default.
+
 ## Phase 2 — pipeline hardening
 
 - [x] `cue-fighter batch` subcommand: dir of audio + dir of json, matched by
