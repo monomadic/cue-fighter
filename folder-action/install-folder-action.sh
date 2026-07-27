@@ -16,6 +16,7 @@ mkdir -p "$WATCH_FOLDER" "$HELPER_DIR" "$CONFIG_DIR" "$FOLDER_ACTION_DIR"
 WATCH_FOLDER="$(cd "$WATCH_FOLDER" && pwd -P)"
 
 /usr/bin/install -m 755 "$SCRIPT_DIR/cue-fighter-autocue.sh" "$HELPER_TARGET"
+/usr/bin/install -m 755 "$SCRIPT_DIR/cue-fighter-autocue-inplace.sh" "$HELPER_DIR/"
 if [[ ! -f "$CONFIG_TARGET" ]]; then
   /usr/bin/install -m 644 "$SCRIPT_DIR/default.env" "$CONFIG_TARGET"
 fi
@@ -29,5 +30,7 @@ printf 'Folder action: %s\n' "$ACTION_TARGET"
 printf 'Helper:        %s\n' "$HELPER_TARGET"
 printf 'Config:        %s\n' "$CONFIG_TARGET"
 printf 'Log:           %s\n' "$HOME/Library/Logs/CueFighterFolderAction/cue-fighter-autocue.log"
+printf 'Cued copies:   %s\n' "${CUE_FIGHTER_OUT_DIR:-$HOME/Music/cue-fighter}"
 printf '\nTo chain it after Mixed In Key instead, set in ~/.config/mik-folder-action/env:\n'
-printf '  MIK_AUTOCUE_SCRIPT="%s"\n' "$HELPER_TARGET"
+printf '  MIK_AUTOCUE_SCRIPT="%s/cue-fighter-autocue-inplace.sh"\n' "$HELPER_DIR"
+printf '  (the in-place variant: that chain copies the original onward itself)\n'

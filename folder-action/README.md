@@ -18,21 +18,24 @@ Config lands at `~/.config/cue-fighter/env`, log at
 external is required — detection is local.
 
 **After Mixed In Key.** The existing `mik-folder-action` has a hook for exactly
-this; point it at the installed helper and it runs after MIK, before the copy to
-Lexicon. In `~/.config/mik-folder-action/env`:
+this. Point it at the **in-place** variant — that chain copies the *original*
+file on to Lexicon after the hook runs, so cues must go into the file itself or
+Lexicon imports an untagged track while the cued copy sits orphaned. In
+`~/.config/mik-folder-action/env`:
 
 ```sh
-MIK_AUTOCUE_SCRIPT="$HOME/Library/Application Scripts/com.nom.cue-fighter/cue-fighter-autocue.sh"
+MIK_AUTOCUE_SCRIPT="$HOME/Library/Application Scripts/com.nom.cue-fighter/cue-fighter-autocue-inplace.sh"
 ```
 
 ## Behaviour
 
-- **Writes in place by default.** VirtualDJ only fills *empty* pads from file
-  tags, so a track has to be tagged before VDJ first indexes it — a copy in a
-  different folder defeats the point. Set `CUE_FIGHTER_OUT_DIR` to write to a
-  copy instead.
-- **Backs up first** (`<file>.cuebak`, written only if absent, so it holds the
-  true original). `cue-fighter undo <file>` reverts.
+- **Writes a cued copy to `~/Music/cue-fighter`**, leaving the original
+  untouched (`CUE_FIGHTER_OUT_DIR`). Point Lexicon at that folder: VirtualDJ
+  only fills *empty* pads from tags, so it has to import the copy, not the
+  original. Set the variable to `""` to write in place instead.
+- **Backs up first when writing in place** (`<file>.cuebak`, written only if
+  absent, so it holds the true original); `cue-fighter undo <file>` reverts.
+  Skipped when writing to a copy — there is nothing to protect.
 - **Skips files that already carry cues**, so re-drops and re-scans are cheap.
   `CUE_FIGHTER_SKIP_EXISTING=0` to force.
 - **Waits for the file to stop changing** before touching it, so a copy still in

@@ -26,9 +26,10 @@ RADIUS="${CUE_FIGHTER_RADIUS:-16}"
 MAX_CUES="${CUE_FIGHTER_MAX_CUES:-16}"
 SNAP="${CUE_FIGHTER_SNAP:-beat}"
 MIN_GAP="${CUE_FIGHTER_MIN_GAP_BEATS:-4}"
-# in-place is the point: VDJ only fills EMPTY pads from tags, so the file must be
-# tagged before VDJ ever indexes it. Set OUT_DIR to write to a copy instead.
-OUT_DIR="${CUE_FIGHTER_OUT_DIR:-}"
+# Cued copies land here, originals untouched. Empty = write in place, which is
+# what the MIK-hook wrapper forces: that chain copies the *original* onward, so a
+# copy written elsewhere would be orphaned and Lexicon would import an untagged file.
+OUT_DIR="${CUE_FIGHTER_OUT_DIR-$HOME/Music/cue-fighter}"
 BACKUP="${CUE_FIGHTER_BACKUP:-1}"
 SKIP_EXISTING="${CUE_FIGHTER_SKIP_EXISTING:-1}"
 NOTIFY="${CUE_FIGHTER_NOTIFY:-1}"
@@ -130,8 +131,14 @@ process_file() {
   }
 
   local -a args=(write "$file" --json "$json")
-  [[ "$BACKUP" == "1" ]] && args+=(--backup)
-  [[ -n "$OUT_DIR" ]] && { mkdir -p "$OUT_DIR"; args+=(--out-dir "$OUT_DIR"); }
+  if [[ -n "$OUT_DIR" ]]; then
+    # writing to a copy — the original is never modified, so there is nothing to
+    # back up and a .cuebak would just litter the output folder
+    mkdir -p "$OUT_DIR"
+    args+=(--out-dir "$OUT_DIR")
+  elif [[ "$BACKUP" == "1" ]]; then
+    args+=(--backup)
+  fi
 
   if ! "$BIN" "${args[@]}" >>"$LOG_FILE" 2>&1; then
     log "write FAILED: $file"
