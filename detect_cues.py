@@ -179,6 +179,29 @@ def bpm_from_name(name: str) -> float | None:
     return (float(m.group(1)) if m else None) or None
 
 
+def load_downbeats(track: Path, dbdir: Path | None) -> dict | None:
+    """Read a madmom sidecar (`<stem>.beats.json` from downbeats.py) if present.
+
+    Returns {"beats", "downbeats", "bpm", "meter"} with times in seconds, or None
+    when no sidecar exists for this track — the caller then falls back to librosa.
+    madmom's beats align to the reference library's manual cues ~5x tighter than
+    librosa's quantized grid (median 4ms vs 22ms), so prefer them when available.
+    """
+    if dbdir is None:
+        return None
+    side = dbdir / f"{track.stem}.beats.json"
+    if not side.exists():
+        return None
+    try:
+        gj = json.loads(side.read_text())
+    except Exception as e:
+        print(f"  bad downbeat sidecar for {track.name} ({e}); using librosa", file=sys.stderr)
+        return None
+    if not gj.get("beats"):
+        return None
+    return gj
+
+
 def beat_grid(y: np.ndarray, bpm_hint: float | None = None) -> tuple[float, np.ndarray]:
     """(tempo, detected_beat_times). A filename BPM, when present, seeds the
     tracker. These are librosa's per-beat *estimates* — the interval wobbles."""
@@ -304,6 +327,11 @@ def main() -> None:
                          "detected = librosa's per-beat estimates (default: quantized)")
     ap.add_argument("--min-gap-beats", type=float, default=4.0,
                     help="drop cues closer than this many beats (default 4 = 1 bar)")
+    ap.add_argument("--downbeats", type=Path, default=None,
+                    help="dir of madmom sidecars (<stem>.beats.json from downbeats.py). "
+                         "When a track has one, snap to madmom's beat/downbeat grid "
+                         "instead of librosa's — aligns ~5x tighter to real beats. "
+                         "Falls back to librosa per-track when a sidecar is missing.")
     args = ap.parse_args()
 
     dev = device()
@@ -322,20 +350,28 @@ def main() -> None:
             failed.append(track.name)
             continue
         bpm_hint = bpm_from_name(track.name)
+        db = load_downbeats(track, args.downbeats)
         positions, scores = raw_detections(track, model, processor, dev, y=y)
         # keep every candidate for now — truncate only after snapping/dedupe, so
         # the 16 slots end up holding 16 *distinct* cues
         times = peak_pick(positions, scores, args.sensitivity, args.radius)
         raw_n = len(times)
 
-        # resolve a constant tempo: filename BPM wins, else estimate it
-        bpm = bpm_hint or beat_grid(y)[0]
+        # resolve a constant tempo for gap/label windows: filename BPM wins, then
+        # madmom's estimate, else librosa's.
+        bpm = bpm_hint or (db["bpm"] if db and db.get("bpm") else None) or beat_grid(y)[0]
+        grid_src = args.grid
         if args.snap != "off":
-            if args.grid == "quantized":
+            if db is not None:
+                # madmom's real beats/downbeats, when a sidecar exists
+                grid = np.asarray(db["downbeats"] if args.snap == "bar" else db["beats"], dtype=float)
+                grid_src = "madmom"
+            elif args.grid == "quantized":
                 beats = quantized_grid(y, bpm, len(y) / SR)
+                grid = bar_starts(y, beats) if args.snap == "bar" else beats
             else:
                 beats = beat_grid(y, bpm)[1]
-            grid = bar_starts(y, beats) if args.snap == "bar" else beats
+                grid = bar_starts(y, beats) if args.snap == "bar" else beats
             times = snap_times(times, grid)
 
         times = enforce_min_gap(times, args.min_gap_beats * 60.0 / bpm)
@@ -362,7 +398,7 @@ def main() -> None:
             "sensitivity": args.sensitivity,
             "radius": args.radius,
             "snap": args.snap,
-            "grid": args.grid,
+            "grid": grid_src,
             "min_gap_beats": args.min_gap_beats,
             "max_cues": args.max_cues,
             "bpm": round(bpm, 2),
@@ -371,7 +407,7 @@ def main() -> None:
         }
         out.write_text(json.dumps({"meta": meta, "cues": cues}, indent=2))
         summary = ", ".join(f"{n}x{l}" for l, n in Counter(labels).most_common()) if labels else "unlabelled"
-        print(f"{track.name}: {len(cues)} cues @{bpm:.0f}bpm [{args.grid} {args.snap}-snap, -{dropped} too close] ({summary}) -> {out}")
+        print(f"{track.name}: {len(cues)} cues @{bpm:.0f}bpm [{grid_src} {args.snap}-snap, -{dropped} too close] ({summary}) -> {out}")
 
     if failed:
         print(f"\n{len(failed)} of {len(args.tracks)} track(s) could not be read:",

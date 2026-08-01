@@ -35,6 +35,7 @@ run needs no re-prep; single-class training just ignores it.
 import argparse
 import json
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +54,57 @@ def norm_family(label: str | None) -> str:
     if not label:
         return "CUE"
     return re.sub(r"\s*\d+\s*$", "", label.strip().upper()) or "CUE"
+
+
+# Canonical structural vocabulary. `canon_family` collapses a messy label to one
+# of these by matching the first rule whose pattern appears in the label — so
+# "DROP 1", "DROP (LOW)", "3 DROP" -> DROP and "CHORUS ohhh lyrics" -> CHORUS.
+# Anything with no structural keyword (ENERGY, freeform lyrics, unlabelled) -> None
+# and is dropped. Multi-word families are listed before their substrings so
+# "MIX IN" beats "MIX" and "PRE-DROP" beats "DROP".
+CANON_RULES = [
+    ("MIX IN", ("MIX IN", "MIXIN")),
+    ("MIX OUT", ("MIX OUT", "MIXOUT")),
+    ("PRE-DROP", ("PRE-DROP", "PRE DROP", "PREDROP")),
+    ("PRE-CHORUS", ("PRE-CHORUS", "PRE CHORUS")),
+    ("POST-CHORUS", ("POST-CHORUS", "POST CHORUS")),
+    ("DRUM ROLL", ("DRUM ROLL", "DRUMROLL")),
+    ("BREAKDOWN", ("BREAKDOWN",)),
+    ("DROP", ("DROP",)),
+    ("CUT", ("CUT",)),
+    ("INTRO", ("INTRO",)),
+    ("OUTRO", ("OUTRO",)),
+    ("BUILD", ("BUILD",)),
+    ("BREAK", ("BREAK",)),
+    ("CHORUS", ("CHORUS",)),
+    ("VERSE", ("VERSE",)),
+    ("VOCAL", ("VOCAL",)),
+    ("BRIDGE", ("BRIDGE",)),
+    ("HOOK", ("HOOK",)),
+    ("MIX", ("MIX",)),
+    ("PRE", ("PRE",)),
+    ("DRUM", ("DRUM", "DRUMS")),
+    ("RISER", ("RISER",)),
+    ("MELODY", ("MELODY",)),
+    ("PHRASE", ("PHRASE",)),
+    ("BASS", ("BASS",)),
+    ("SNARE", ("SNARE",)),
+    ("KICK", ("KICK",)),
+    ("SYNTH", ("SYNTH",)),
+    ("CYMBAL", ("CYMBAL",)),
+    ("BEAT", ("BEAT",)),
+    ("RHYTHM", ("RHYTHM",)),
+]
+
+
+def canon_family(family: str) -> str | None:
+    """Collapse a label to its canonical structural family, or None if it uses no
+    structural vocabulary (dropped under --keep-standard)."""
+    u = family.upper()
+    for canon, pats in CANON_RULES:
+        if any(p in u for p in pats):
+            return canon
+    return None
 
 
 def read_manual(track: Path, binp: str) -> list[tuple[int, str]]:
@@ -104,6 +156,14 @@ def main() -> None:
     ap.add_argument("--bin", default=DEFAULT_BIN)
     ap.add_argument("--w-box", type=int, default=20, help="target box width in pixels")
     ap.add_argument("--jitter", type=float, default=0.30, help="max slice-centre jitter as fraction of width")
+    ap.add_argument("--exclude-labels", default="",
+                    help="comma-separated cue families to drop entirely (e.g. ENERGY = Mixed In Key's "
+                         "auto markers, which aren't your placements). Dropped cues seed no slice and "
+                         "appear in no box.")
+    ap.add_argument("--keep-standard", action="store_true",
+                    help="keep ONLY cues whose label uses the structural vocabulary (DROP/CUT/INTRO/"
+                         "BUILD/BREAK/MIX/CHORUS/VERSE/VOCAL/...). Drops ENERGY, unlabelled cues, and "
+                         "freeform lyric cues in one pass.")
     ap.add_argument("--val-frac", type=float, default=0.10, help="fraction of TRACKS held out for validation")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--preview", type=int, default=8, help="how many annotated slices to render for eyeballing")
@@ -128,8 +188,21 @@ def main() -> None:
     n_prev = 0
     stats = {"tracks": 0, "skipped": 0, "slices": 0, "boxes": 0}
 
+    exclude = {x.strip().upper() for x in args.exclude_labels.split(",") if x.strip()}
+    dropped_fams: Counter = Counter()
     for ti, track in enumerate(order):
         cues = read_manual(track, args.bin)
+        if exclude:
+            cues = [(ms, fam) for ms, fam in cues if fam not in exclude]
+        if args.keep_standard:
+            kept = []
+            for ms, fam in cues:
+                canon = canon_family(fam)
+                if canon is None:
+                    dropped_fams[fam] += 1
+                else:
+                    kept.append((ms, canon))   # store the collapsed family
+            cues = kept
         if len(cues) < args.min_cues:
             stats["skipped"] += 1
             continue
@@ -194,6 +267,12 @@ def main() -> None:
     print(f"\ntracks used {stats['tracks']}  skipped {stats['skipped']}")
     print(f"train: {len(coco['train']['images'])} slices / {len(coco['train']['annotations'])} boxes")
     print(f"val:   {len(coco['val']['images'])} slices / {len(coco['val']['annotations'])} boxes")
+    if args.keep_standard:
+        kept_fams = Counter(a["family"] for s in ("train", "val") for a in coco[s]["annotations"])
+        print(f"\nkept families (canonical): {dict(kept_fams.most_common())}")
+        n_drop = sum(dropped_fams.values())
+        print(f"dropped {n_drop} non-standard cues; top: "
+              + ", ".join(f"{f}({n})" for f, n in dropped_fams.most_common(10)))
     print(f"previews -> {args.out / 'preview'}")
 
 

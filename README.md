@@ -161,6 +161,14 @@ cue-fighter write track.flac --toml ~/cue-checkpoint/track.flac.cues.toml --repl
 - Grid type: `--grid quantized` (default) builds a rigid constant-tempo grid
   (`phase + k·60/bpm`, like a DJ beatgrid), phase-fitted to the audio; `--grid
   detected` snaps to librosa's raw per-beat estimates, whose interval wobbles.
+- **Best grid: madmom downbeats.** `uv run downbeats.py <tracks> -o grids/`
+  precomputes a real beat+downbeat grid to `<stem>.beats.json` sidecars; pass
+  `detect_cues.py --downbeats grids/` to snap to it instead of librosa. It aligns
+  ~5× tighter to real beats (median 4 ms vs 22 ms), cutting detected-cue phase
+  error from 0.13 → 0.01 beat — cues land dead-on the kick. madmom runs in its
+  own quarantined py3.9 env (it predates Python 3.10); missing sidecars fall back
+  to librosa per-track, so `--downbeats` is always safe. It improves cue
+  *placement*, not the cue count.
 - Cues are labelled INTRO / BUILD / DROP / BREAK / CUT / OUTRO from position and
   local RMS energy, coloured to match the reference library's convention
   (`--no-labels` restores plain `cue`). CUE-DETR itself is single-class and

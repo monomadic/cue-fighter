@@ -42,6 +42,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 import detect_cues as dc
+from cuehtml import file_url
 
 DEFAULT_BIN = str(Path(__file__).resolve().parent / "target" / "release" / "cue-fighter")
 
@@ -82,6 +83,43 @@ def waveform_png(y: np.ndarray, beats: np.ndarray, bars: np.ndarray, dur: float)
     buf = BytesIO()
     img.save(buf, "PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+# All-In-One (Harmonix) segment label -> band colour. Tuned to read against the
+# dark card; `start`/`end` are track edges, not musical sections, so drawn faint.
+HARMONIX_COLORS = {
+    "intro": "4C9AFF", "verse": "8B949E", "chorus": "3FB950", "inst": "A371F7",
+    "break": "D29922", "bridge": "DB61A2", "solo": "F778BA", "outro": "1F6FEB",
+    "start": "30363D", "end": "30363D",
+}
+
+
+def load_segments(d: Path | None, stem: str) -> list[dict]:
+    """Read All-In-One segments from a <stem>.beats.json sidecar (times in s)."""
+    if not d:
+        return []
+    jf = d / f"{stem}.beats.json"
+    if not jf.exists():
+        return []
+    return json.loads(jf.read_text()).get("segments", [])
+
+
+def segment_band(segments: list[dict], dur: float) -> str:
+    """Coloured, seekable spans — one per segment — with the label centred."""
+    if not segments or not dur:
+        return '<div class="empty">no segments for this track</div>'
+    out = []
+    for s in segments:
+        st, en = float(s["start"]), float(s["end"])
+        left, width = 100 * st / dur, 100 * (en - st) / dur
+        lab = html.escape(str(s.get("label", "")))
+        col = HARMONIX_COLORS.get(s.get("label", ""), "6E7681")
+        out.append(
+            f'<div class="seg" style="left:{left:.3f}%;width:{width:.3f}%;background:#{col}" '
+            f'data-t="{st:.3f}" title="{lab} — {mmss(st*1000)}–{mmss(en*1000)}">'
+            f'<span>{lab}</span></div>'
+        )
+    return "".join(out)
 
 
 def read_manual_cues(track: Path, binp: str) -> list[dict]:
@@ -161,6 +199,16 @@ padding:7px 13px;border-radius:5px;margin-right:8px}
 audio{display:none}
 .prov{color:#6e7681;font-size:11px;font-variant-numeric:tabular-nums}
 .mk.prev .lab,.mk.man .lab{opacity:.82}
+/* --- All-In-One structure band --- */
+.band{position:relative;width:100%;height:26px;border-radius:4px;overflow:hidden;background:#0b0e13}
+.seg{position:absolute;top:0;height:100%;border-right:1px solid #0b0e13;cursor:pointer;
+overflow:hidden;display:flex;align-items:center;justify-content:center;transition:filter .08s}
+.seg:hover{filter:brightness(1.2)}
+.seg span{font-size:10px;font-weight:700;color:#0b0e13;text-transform:uppercase;letter-spacing:.03em;
+white-space:nowrap;padding:0 4px;text-overflow:ellipsis;overflow:hidden}
+/* segment boundaries drawn over the waveform, so you can read them against cues */
+.bnd{position:absolute;top:0;height:100%;width:1.5px;background:rgba(255,255,255,.5);pointer-events:none}
+.bnd.first{display:none}
 """
 
 JS = """
@@ -182,8 +230,8 @@ document.querySelectorAll('.card').forEach(card => {
     const r = wrap.getBoundingClientRect();
     seek(((e.clientX - r.left) / r.width) * dur);
   });
-  // click a cue chip to jump to it
-  card.querySelectorAll('.lab[data-t]').forEach(el => {
+  // click a cue chip or a structure segment to jump to it
+  card.querySelectorAll('.lab[data-t], .seg[data-t]').forEach(el => {
     el.addEventListener('click', e => { e.stopPropagation(); seek(parseFloat(el.dataset.t)); });
   });
   btn.addEventListener('click', () => a.paused ? seek(a.currentTime||0) : a.pause());
@@ -213,9 +261,16 @@ def main() -> None:
     ap.add_argument("--compare-dir", type=Path,
                     help="a second cue dir (e.g. a previous run) shown as its own lane")
     ap.add_argument("--compare-name", default="previous run", help="label for --compare-dir")
+    ap.add_argument("--segments-dir", type=Path,
+                    help="dir of All-In-One sidecars (<stem>.beats.json) — draws the "
+                         "labeled segment band + boundary lines over the waveform")
     ap.add_argument("--bin", default=DEFAULT_BIN, help="path to cue-fighter binary")
     ap.add_argument("-o", "--out", type=Path, default=Path("report.html"))
     ap.add_argument("--no-manual", action="store_true", help="skip the manual-cue comparison lane")
+    ap.add_argument("--audio-dir", type=Path,
+                    help="play audio from <audio-dir>/<track-name> instead of the track's own "
+                         "path — use when the library lives in iCloud/~Library (browsers can't "
+                         "read it); point at a local copy so file:// audio loads")
     args = ap.parse_args()
 
     tracks = list(args.tracks)
@@ -247,6 +302,7 @@ def main() -> None:
         auto, meta = load_cues(args.json_dir)
         prev, prev_meta = load_cues(args.compare_dir)
         manual = [] if args.no_manual else read_manual_cues(t, args.bin)
+        segments = load_segments(args.segments_dir, t.stem)
 
         # draw the SAME grid the cues were snapped to: prefer the run's own
         # recorded bpm/grid, fall back to the filename BPM + quantized default
@@ -275,7 +331,7 @@ def main() -> None:
         if auto:
             lanes += (f'<div class="lane-label">detected — {len(auto)} cues{prov}</div>'
                       f'<div class="lane">{markers(auto, dur_ms, "auto")}</div>')
-        else:
+        elif args.json_dir is not None:
             lanes += '<div class="empty">no detected cues for this track</div>'
         if prev:
             pg = html.escape(str(prev_meta.get("generated", "")))
@@ -286,8 +342,23 @@ def main() -> None:
             lanes += (f'<div class="lane-label">yours (existing tag) — {len(manual)} cues</div>'
                       f'<div class="lane">{markers(manual, dur_ms, "man")}</div>')
 
-        # linked, not embedded: FLACs are ~25 MB each and browsers play file:// audio
-        src = t.resolve().as_uri()
+        # All-In-One structure band + boundary lines over the waveform
+        seg_overlay = band = ""
+        if args.segments_dir is not None:
+            bounds = sorted({float(s["start"]) for s in segments})
+            seg_overlay = "".join(
+                f'<div class="bnd{" first" if i == 0 else ""}" '
+                f'style="left:{100*bt/dur:.3f}%"></div>'
+                for i, bt in enumerate(bounds)
+            )
+            band = (f'<div class="lane-label">All-In-One structure — {len(segments)} segments</div>'
+                    f'<div class="band">{segment_band(segments, dur)}</div>')
+
+        # linked, not embedded: FLACs are ~25 MB each and browsers play file:// audio.
+        # never resolve() — a track under ~/Library (iCloud) becomes unreadable to the
+        # browser; --audio-dir points playback at a local copy outside ~/Library.
+        audio_path = (args.audio_dir / t.name) if args.audio_dir else t
+        src = file_url(audio_path)
         cards.append(f"""<div class="card" data-dur="{dur:.4f}">
 <div class="hdr"><div class="title">{html.escape(t.stem)}</div>
 <div class="meta"><button class="play">▶ play</button><span class="time">0:00 / {mmss(dur_ms)}</span>
@@ -295,13 +366,22 @@ def main() -> None:
 <b>{mmss(dur_ms)}</b> &nbsp; {len(bars)} bars</div></div>
 <audio preload="none" src="{html.escape(src)}"></audio>
 <div class="wrap"><img src="{img}" alt="waveform">
-<div class="overlay"><div class="lane">{markers(auto, dur_ms, "auto")}</div></div>
+<div class="overlay"><div class="lane">{markers(auto, dur_ms, "auto")}</div>{seg_overlay}</div>
 <div class="ph"></div></div>
+{band}
 {lanes}</div>""")
 
     legend = "".join(
         f'<span style="background:#{c}">{l}</span>' for l, c in dc.LABEL_COLORS.items()
     )
+    seg_legend = ""
+    if args.segments_dir is not None:
+        seg_legend = (
+            '<div class="legend" style="margin-top:8px">'
+            + "".join(f'<span style="background:#{c}">{l}</span>'
+                      for l, c in HARMONIX_COLORS.items() if l not in ("start", "end"))
+            + "</div>"
+        )
     rev = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip() or "untracked"
     stamp = f'generated {datetime.now().isoformat(timespec="seconds")} · cue-fighter @ {rev}'
@@ -310,7 +390,7 @@ def main() -> None:
            f'<div class="sub">{len(tracks)} track(s) · <span class="prov">{html.escape(stamp)}</span>'
            f'<br>Grid: faint = beats, brighter = bars, '
            f'amber = every 4 bars. <b>Click the waveform to seek, click a cue chip to jump to it.</b>'
-           f'<div class="legend">{legend}</div></div>'
+           f'<div class="legend">{legend}</div>{seg_legend}</div>'
            + "".join(cards) + f"<script>{JS}</script>")
     args.out.write_text(doc)
     print(f"wrote {args.out}  ({args.out.stat().st_size/1024:.0f} KB, {len(cards)} tracks)")

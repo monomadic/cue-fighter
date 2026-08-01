@@ -27,6 +27,10 @@ cargo run -- read <track>        # run CLI in dev
 
 # detection (first run downloads the disco-eth/cue-detr checkpoint from HF)
 uv run detect_cues.py <tracks> -o cues/     # -s sensitivity, -r radius, --max-cues
+uv run detect_cues.py <tracks> -c runs/ft2 -s 0.93 --downbeats grids/ -o cues/  # fine-tuned + madmom grid
+
+# real beat/downbeat grid (madmom, py3.9-quarantined) -> <stem>.beats.json sidecars
+uv run downbeats.py <tracks> -o grids/ [--skip-existing] [--meters 3,4]
 
 # write / inspect embedded serato tags
 cue-fighter write <track> --json cues/track.cues.json
@@ -77,6 +81,22 @@ Integration tests live in `tests/roundtrip.rs` (drive the built binary via `CARG
 - **Two write paths, by design.** `apply_cues` (parses, edits only cues, re-serializes) is the cue-editing path. `write_markers2_payload` (writes raw bytes verbatim, no parse) is the byte-faithful restore path for `import`; `write_markers2_raw` serializes an `m2` then funnels through it. Keep the cue-only invariant in `apply_cues`; keep `import`/`export` raw.
 
 - **Serato Markers2 is not the only cue source.** Real library files also carry Mixed In Key's `CUEPOINTS` (JSON: `{"cues":[{"name","time"}...],"source":"mixedinkey"}`), plus `BEATGRID`, `ENERGY`, `SERATO_BEATGRID`, `SERATO_AUTOGAIN`. Players (VirtualDJ especially) may read those in preference to ours, so `--replace` — which only clears Serato CUE entries — does NOT guarantee our cues are what the player shows. `scrub_metadata()` strips every tag (FLAC: VorbisComment/Application/Picture/CueSheet blocks; MP3: writes an empty ID3 tag) and is exposed as `--scrub`. **`--scrub` is hard-gated on `--out-dir`** so it can only ever touch a copy — keep that guard. Also note VDJ caches tags in its own database, so a path it has seen before can show stale cues regardless of file contents; test with a fresh filename.
+
+- **madmom is quarantined in its own py3.9 env, by necessity.** `downbeats.py`
+  precomputes a real beat+downbeat grid (`<stem>.beats.json` sidecars) that
+  `detect_cues.py --downbeats <dir>` snaps to instead of librosa's onset-heuristic
+  grid. madmom 0.16.1 predates Python 3.10 (uses `collections.MutableSequence`,
+  `np.float`, `pkg_resources`) and will not run under detect_cues' py3.10–3.12 /
+  torch / transformers env — so its PEP723 header pins `requires-python
+  >=3.9,<3.10`, `numpy==1.23.5`, `setuptools<60`, and injects the missing Cython
+  build dep via `[tool.uv.extra-build-dependencies]`. Do NOT try to merge madmom
+  into detect_cues; the JSON sidecar is the seam. The grid it produces aligns to
+  the library's manual cues ~5x tighter than librosa's (median 4ms vs 22ms) and
+  cut detected-cue phase error from 0.13→0.01 beat on the held-out set. When a
+  sidecar is missing, `detect_cues` falls back to librosa per-track — so
+  `--downbeats` is always safe to pass. madmom improves *placement*, not the cue
+  count: recall/precision at 1-beat tolerance are unchanged (rogue-cue count is
+  the model's job, not the grid's).
 
 - **Two HTML tools, deliberately separate.** `report.py` judges *detection
   quality* against manual cues, so it imports `detect_cues` — and `detect_cues`

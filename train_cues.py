@@ -103,7 +103,7 @@ def eval_loss(model, loader, dev) -> float:
     total, n = 0.0, 0
     for pixel_values, labels in loader:
         out = model(pixel_values=pixel_values.to(dev), labels=to_device(labels, dev))
-        total += float(out.loss); n += 1
+        total += out.loss.item(); n += 1
     return total / max(n, 1)
 
 
@@ -156,7 +156,7 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_(params, 0.1)
             opt.step(); sched.step(); step += 1
             if step % 50 == 0:
-                print(f"  epoch {epoch} step {step}/{total_steps}  loss {float(out.loss):.3f}  lr {sched.get_last_lr()[0]:.2e}", flush=True)
+                print(f"  epoch {epoch} step {step}/{total_steps}  loss {out.loss.item():.3f}  lr {sched.get_last_lr()[0]:.2e}", flush=True)
         vloss = eval_loss(model, val_loader, dev)
         print(f"epoch {epoch}: val_loss {vloss:.3f}  (best {best:.3f})", flush=True)
         if vloss < best - 1e-4:
