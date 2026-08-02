@@ -26,6 +26,40 @@ duplicated verbatim; shell scripts are text, so the cost is nothing and the copy
 in `_done` becomes an exact record of how that file was produced — including the
 detection parameters, which are literals in the script rather than config.
 
+**`beatport-fetch`** — not a `.job` itself, a driver that submits them. Runs
+[`beetport`](https://github.com/monomadic/beetroot-dl), which prints the
+path of each downloaded file to stdout and exits when done — so *what* was
+downloaded is just what it said, and *whether it finished* is just that it
+returned. No directory diffing, no `-newer` timing games, no filename-template
+tricks to make the output identifiable.
+
+Each downloaded track is moved into `~/jobs` with `cue-track.job`'s `.untagged`
+marker and a copy of `cue-track.job` dropped beside it (data first, sentinel
+last, same ordering as `send-job`). It polls `_done`/`_err` for the matching
+`<name>.job.done`/`.err`, and on success moves the finished (marker-stripped)
+track into the Lexicon watch folder.
+
+Following the same contract it consumes, the final cued paths go to stdout,
+one per line; logging goes to stderr; exit is `0` only if everything
+downloaded *and* cued.
+
+```sh
+job/beatport-fetch "https://www.beatport.com/track/strobe/1696999"
+```
+
+Symlinked onto PATH at `~/.bin/beatport-fetch` (mirroring the dotfiles repo's
+own `~/.bin -> ~/config/bin/*` convention), so it also just runs as:
+
+```sh
+beatport-fetch "https://www.beatport.com/track/strobe/1696999"
+```
+
+Config is env-overridable (same file as the folder-action, `~/.config/cue-fighter/env`):
+`CUE_FIGHTER_BEETPORT`, `CUE_FIGHTER_JOBS_DIR`, `CUE_FIGHTER_LEXICON_DIR`,
+`CUE_FIGHTER_JOB_POLL`, `CUE_FIGHTER_JOB_TIMEOUT`. Requires `beetport`
+configured and logged in once (`~/.config/beetport.toml`), and
+`job-runner`/`job-folder` already installed and watching `CUE_FIGHTER_JOBS_DIR`.
+
 ## Conventions
 
 - **In-progress work is named for it.** The tagged copy is staged as
