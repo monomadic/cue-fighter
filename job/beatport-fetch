@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# beatport-fetch — download from Beatport, cue the track via the job-runner
+# drop-folder (~/jobs), then land it in the Lexicon watch folder.
+#
+# Usage:
+#   job/beatport-fetch (or just `beatport-fetch` — symlinked onto PATH) <url> [url...]
+#
+# beetport prints the path of each downloaded file to stdout, one per line,
+# and exits when it's done — so "what did we just download?" is simply what it
+# said, and "is it finished?" is simply that it returned. Everything else here
+# is the handoff to the job runner.
+#
+# The one thing that still needs polling is job-runner's own pickup: dropping a
+# .job file only queues the work; a separate launchd-triggered process runs it,
+# so we watch _done/_err for the sentinel it leaves behind.
+#
+# Requires:
+#   - beetport configured and logged in once (~/.config/beetport.toml).
+#   - job-runner (utils/job-runner in the config repo) installed and watching
+#     $JOBS_DIR, so dropped .job files actually get picked up.
+set -uo pipefail
+
+PATH="$HOME/.bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+CONFIG_FILE="${CUE_FIGHTER_CONFIG:-$HOME/.config/cue-fighter/env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+fi
+
+REPO="${CUE_FIGHTER_REPO:-$HOME/src/cue-fighter}"
+BEETPORT="${CUE_FIGHTER_BEETPORT:-beetport}"
+JOBS_DIR="${CUE_FIGHTER_JOBS_DIR:-$HOME/jobs}"
+LEXICON_DIR="${CUE_FIGHTER_LEXICON_DIR:-$HOME/Music/Downloads}"
+JOB_TEMPLATE="$REPO/job/cue-track.job"
+MARKER=".untagged" # must match cue-track.job's own MARKER
+POLL_SECS="${CUE_FIGHTER_JOB_POLL:-3}"
+JOB_TIMEOUT="${CUE_FIGHTER_JOB_TIMEOUT:-1800}"
+
+LOG_DIR="$HOME/Library/Logs/CueFighterBeatport"
+LOG_FILE="$LOG_DIR/beatport-fetch.log"
+mkdir -p "$LOG_DIR" "$JOBS_DIR" "$LEXICON_DIR"
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
+die() { log "FAILED: $*"; exit 1; }
+
+is_audio_file() {
+  case "${1##*.}" in
+    [Ff][Ll][Aa][Cc] | [Mm][Pp]3 | [Aa][Ii][Ff] | [Aa][Ii][Ff][Ff]) return 0 ;;
+    # m4a/wav carry no Serato Markers2 writer yet — leave them where they are
+    *) return 1 ;;
+  esac
+}
+
+(($# == 0)) && die "usage: beatport-fetch <url> [url...]"
+command -v "$BEETPORT" >/dev/null || die "beetport not on PATH (set CUE_FIGHTER_BEETPORT)"
+[[ -f "$JOB_TEMPLATE" ]] || die "job template missing: $JOB_TEMPLATE"
+[[ -d "$JOBS_DIR" ]] || die "jobs folder missing: $JOBS_DIR (is job-runner installed?)"
+
+# --- download ---------------------------------------------------------------
+# stdout is the list of files; stderr (progress bars, errors) goes straight to
+# the terminal untouched, so the bars still redraw properly.
+log "downloading: $*"
+downloads="$(mktemp)"
+trap 'rm -f "$downloads"' EXIT
+
+"$BEETPORT" "$@" >"$downloads"
+dl_status=$?
+
+new_files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && new_files+=("$f")
+done <"$downloads"
+
+# A partial failure still leaves usable files on stdout, so queue what we got
+# and carry the failure through to our own exit status at the end.
+((dl_status != 0)) && log "beetport exited $dl_status (continuing with what it produced)"
+
+if ((${#new_files[@]} == 0)); then
+  log "nothing downloaded"
+  exit "$dl_status"
+fi
+log "downloaded ${#new_files[@]} file(s)"
+
+# --- queue each as a job-runner job ------------------------------------------
+queued_names=()
+for f in "${new_files[@]}"; do
+  name="$(basename "$f")"
+
+  if [[ ! -f "$f" ]]; then
+    log "reported but missing, skipping: $f"
+    continue
+  fi
+  if ! is_audio_file "$f"; then
+    log "skip (no tag writer for this format): $name"
+    continue
+  fi
+
+  ext="${name##*.}"
+  stem="${name%.*}"
+  staged_name="$stem$MARKER.$ext"
+  staged_path="$JOBS_DIR/$staged_name"
+  job_path="$JOBS_DIR/$staged_name.job"
+
+  if [[ -e "$staged_path" || -e "$job_path" ]]; then
+    log "already queued, skipping: $staged_name"
+    continue
+  fi
+
+  # Data first, .job sentinel last, so the watcher never sees a half-copied
+  # pair — the same ordering send-job uses for the network share.
+  if ! mv "$f" "$staged_path"; then
+    log "move to jobs dir FAILED: $name"
+    continue
+  fi
+  if ! cp -p "$JOB_TEMPLATE" "$job_path"; then
+    log "job copy FAILED: $name"
+    mv "$staged_path" "$f" 2>/dev/null || true
+    continue
+  fi
+  chmod +x "$job_path"
+  log "queued: $staged_name"
+  queued_names+=("$staged_name")
+done
+
+((${#queued_names[@]} == 0)) && {
+  log "nothing queued"
+  exit "$dl_status"
+}
+
+# --- wait for job-runner to pick each one up and finish ----------------------
+failed=0
+for staged_name in "${queued_names[@]}"; do
+  deadline=$((SECONDS + JOB_TIMEOUT))
+  done_path="$JOBS_DIR/_done/$staged_name.job.done"
+  err_path="$JOBS_DIR/_err/$staged_name.job.err"
+  stem="${staged_name%"$MARKER".*}"
+  ext="${staged_name##*.}"
+  final_path="$JOBS_DIR/$stem.$ext" # marker stripped — cue-track.job's output
+
+  while ((SECONDS < deadline)); do
+    if [[ -e "$done_path" ]]; then
+      if [[ -e "$final_path" ]] && mv -f "$final_path" "$LEXICON_DIR/"; then
+        log "cued -> $LEXICON_DIR/$(basename "$final_path")"
+        # Same contract as beetport: finished paths on stdout, one per line.
+        printf '%s\n' "$LEXICON_DIR/$(basename "$final_path")"
+      else
+        log "job done but output missing or unmovable: $final_path"
+        failed=1
+      fi
+      break
+    fi
+    if [[ -e "$err_path" ]]; then
+      log "job FAILED: $staged_name (see $err_path)"
+      failed=1
+      break
+    fi
+    sleep "$POLL_SECS"
+  done
+  if ((SECONDS >= deadline)); then
+    log "TIMEOUT waiting for job: $staged_name"
+    failed=1
+  fi
+done
+
+log "=== done"
+((dl_status != 0 || failed != 0)) && exit 1
+exit 0
