@@ -75,7 +75,7 @@ class CocoCueDataset(Dataset):
     def __getitem__(self, i: int):
         im = self.images[i]
         img = Image.open(self.dir / im["file_name"]).convert("RGB")
-        anns = [{"image_id": im["id"], "category_id": 0, "bbox": a["bbox"],
+        anns = [{"image_id": im["id"], "category_id": a.get("category_id", 0), "bbox": a["bbox"],
                  "area": a["area"], "iscrowd": 0} for a in self.by_image[im["id"]]]
         enc = self.processor(images=img, annotations={"image_id": im["id"], "annotations": anns},
                              do_resize=False, return_tensors="pt")
@@ -122,9 +122,19 @@ def main() -> None:
     args = ap.parse_args()
 
     dev = device()
-    print(f"device: {dev}  |  continuing from {args.checkpoint}")
+    # multi-class: read the label set the dataset was built with (classes.json).
+    # Single-class datasets have no such file -> num_labels=1 (the old behaviour).
+    cls_file = args.data / "classes.json"
+    categories = json.loads(cls_file.read_text()) if cls_file.exists() else [{"id": 0, "name": "cue"}]
+    num_labels = len(categories)
+    print(f"device: {dev}  |  continuing from {args.checkpoint}  |  {num_labels} class(es): "
+          f"{[c['name'] for c in categories]}")
     processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
-    model = DetrForObjectDetection.from_pretrained(args.checkpoint).to(dev)
+    # ignore_mismatched_sizes re-inits the classification head when num_labels
+    # differs from the checkpoint's (disco-eth/cue-detr is single-class), keeping
+    # the pretrained backbone + encoder/decoder.
+    model = DetrForObjectDetection.from_pretrained(
+        args.checkpoint, num_labels=num_labels, ignore_mismatched_sizes=True).to(dev)
     if args.freeze_backbone:
         for p in model.model.backbone.parameters():
             p.requires_grad = False
@@ -141,6 +151,7 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
 
     args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "classes.json").write_text(json.dumps(categories, indent=2))
     best = float("inf")
     since_best = 0
     step = 0

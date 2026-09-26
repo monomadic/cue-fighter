@@ -33,9 +33,11 @@ run needs no re-prep; single-class training just ignores it.
 """
 
 import argparse
+import csv as csvmod
 import json
+import os
 import subprocess
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +49,26 @@ W_SLICE = dc.W_WIN          # 355 — must match the model's training/inference 
 H = 128
 HOP = 512                   # librosa melspectrogram default (n_fft//4) — sets the time->pixel map
 DEFAULT_BIN = str(Path(__file__).resolve().parent / "target" / "release" / "cue-fighter")
+
+# The locked multi-class label set (the "huge data" structural classes; thin
+# classes like CHORUS/VERSE/PRE-CHORUS and the sparse event layer are held back
+# until there's more data). Order defines category_id. Override with --classes.
+DEFAULT_CLASSES = ["DROP", "CUT", "INTRO", "BUILD", "OUTRO", "MIX IN", "BREAK"]
+
+
+def load_lexicon_cues(csv_path: Path, classes: set[str]) -> dict[str, list[tuple[int, str]]]:
+    """basename -> sorted [(ms, coarse_class)] from lexicon_cues.py's CSV, keeping
+    only STRUCTURE cues whose coarse class is in `classes`. Keyed by basename so it
+    survives the library being moved/consolidated into one directory."""
+    by_base: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for r in csvmod.DictReader(open(csv_path)):
+        if r.get("layer") != "structure":
+            continue
+        coarse = r["coarse"]
+        if coarse not in classes:
+            continue
+        by_base[os.path.basename(r["path"])].append((int(r["start_ms"]), coarse))
+    return {b: sorted(v) for b, v in by_base.items()}
 
 
 def norm_family(label: str | None) -> str:
@@ -154,6 +176,15 @@ def main() -> None:
     ap.add_argument("--list", help="file of newline-separated track paths")
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--bin", default=DEFAULT_BIN)
+    ap.add_argument("--cues-csv", type=Path,
+                    help="Lexicon-sourced labeled cues (from lexicon_cues.py). When set, this is the "
+                         "MULTI-CLASS source of truth: cues are matched to audio by basename in "
+                         "--audio-dir, and each box's category is its coarse class. Replaces the "
+                         "file-tag reader.")
+    ap.add_argument("--audio-dir", type=Path,
+                    help="directory holding the audio (matched to --cues-csv by basename)")
+    ap.add_argument("--classes", default=",".join(DEFAULT_CLASSES),
+                    help="comma-separated coarse classes to train (order = category_id)")
     ap.add_argument("--w-box", type=int, default=20, help="target box width in pixels")
     ap.add_argument("--jitter", type=float, default=0.30, help="max slice-centre jitter as fraction of width")
     ap.add_argument("--exclude-labels", default="",
@@ -170,20 +201,46 @@ def main() -> None:
     ap.add_argument("--min-cues", type=int, default=4, help="skip tracks with fewer manual cues")
     args = ap.parse_args()
 
-    tracks = list(args.tracks)
-    if args.list:
-        tracks += [Path(l) for l in Path(args.list).read_text().splitlines() if l.strip()]
+    classes = [c.strip().upper() for c in args.classes.split(",") if c.strip()]
+    fam2id = {c: i for i, c in enumerate(classes)}
+    multiclass = args.cues_csv is not None
+
+    cue_map: dict[Path, list[tuple[int, str]]] = {}
+    if multiclass:
+        if not args.audio_dir:
+            raise SystemExit("--cues-csv requires --audio-dir (where the audio lives)")
+        lex = load_lexicon_cues(args.cues_csv, set(classes))
+        audio_index = {p.name: p for p in args.audio_dir.iterdir() if p.is_file()}
+        order, missing = [], []
+        for base, cues in lex.items():
+            p = audio_index.get(base)
+            if p is None:
+                missing.append(base)
+                continue
+            cue_map[p] = cues
+            order.append(p)
+        order.sort(key=lambda p: p.name)
+        print(f"lexicon mode: classes {classes}")
+        print(f"  {len(order)} tracks resolved in {args.audio_dir}  ({len(missing)} missing audio)")
+        if missing:
+            Path(args.out).mkdir(parents=True, exist_ok=True)
+            (args.out / "missing_audio.txt").write_text("\n".join(sorted(missing)))
+    else:
+        tracks = list(args.tracks)
+        if args.list:
+            tracks += [Path(l) for l in Path(args.list).read_text().splitlines() if l.strip()]
+        order = sorted(tracks, key=lambda p: p.name)
 
     rng = np.random.default_rng(args.seed)
     # deterministic per-track val split
-    order = sorted(tracks, key=lambda p: p.name)
     val_set = set(rng.choice(len(order), size=max(1, int(len(order) * args.val_frac)), replace=False).tolist())
 
     for split in ("train", "val", "preview"):
         (args.out / split).mkdir(parents=True, exist_ok=True)
 
-    coco = {s: {"images": [], "annotations": [],
-                "categories": [{"id": 0, "name": "cue"}]} for s in ("train", "val")}
+    categories = ([{"id": i, "name": c} for i, c in enumerate(classes)] if multiclass
+                  else [{"id": 0, "name": "cue"}])
+    coco = {s: {"images": [], "annotations": [], "categories": categories} for s in ("train", "val")}
     img_id = ann_id = 0
     n_prev = 0
     stats = {"tracks": 0, "skipped": 0, "slices": 0, "boxes": 0}
@@ -191,18 +248,21 @@ def main() -> None:
     exclude = {x.strip().upper() for x in args.exclude_labels.split(",") if x.strip()}
     dropped_fams: Counter = Counter()
     for ti, track in enumerate(order):
-        cues = read_manual(track, args.bin)
-        if exclude:
-            cues = [(ms, fam) for ms, fam in cues if fam not in exclude]
-        if args.keep_standard:
-            kept = []
-            for ms, fam in cues:
-                canon = canon_family(fam)
-                if canon is None:
-                    dropped_fams[fam] += 1
-                else:
-                    kept.append((ms, canon))   # store the collapsed family
-            cues = kept
+        if multiclass:
+            cues = cue_map[track]              # already (ms, coarse class), filtered
+        else:
+            cues = read_manual(track, args.bin)
+            if exclude:
+                cues = [(ms, fam) for ms, fam in cues if fam not in exclude]
+            if args.keep_standard:
+                kept = []
+                for ms, fam in cues:
+                    canon = canon_family(fam)
+                    if canon is None:
+                        dropped_fams[fam] += 1
+                    else:
+                        kept.append((ms, canon))   # store the collapsed family
+                cues = kept
         if len(cues) < args.min_cues:
             stats["skipped"] += 1
             continue
@@ -231,13 +291,16 @@ def main() -> None:
                         boxes.append((p, fam))
                 if not boxes:
                     continue                              # (shouldn't happen: the centre cue is in-slice)
-                fn = f"{track.stem[:60]}_{ci}.png".replace("/", "_")
+                # img_id is globally unique -> no cross-track filename collisions
+                # (two tracks sharing a truncated stem + cue index used to clash)
+                fn = f"{img_id:06d}_{track.stem[:40]}_{ci}.png".replace("/", "_")
                 Image.fromarray(seg).save(args.out / split / fn)
                 coco[split]["images"].append({"id": img_id, "file_name": fn, "width": W_SLICE, "height": H})
                 for p, fam in boxes:
                     bb = box_for(p, args.w_box)
                     coco[split]["annotations"].append({
-                        "id": ann_id, "image_id": img_id, "category_id": 0,
+                        "id": ann_id, "image_id": img_id,
+                        "category_id": fam2id.get(fam, 0),
                         "bbox": bb, "area": bb[2] * bb[3], "iscrowd": 0, "family": fam,
                     })
                     ann_id += 1
@@ -264,9 +327,14 @@ def main() -> None:
 
     for s in ("train", "val"):
         (args.out / f"{s}.json").write_text(json.dumps(coco[s]))
+    (args.out / "classes.json").write_text(json.dumps(categories, indent=2))
     print(f"\ntracks used {stats['tracks']}  skipped {stats['skipped']}")
     print(f"train: {len(coco['train']['images'])} slices / {len(coco['train']['annotations'])} boxes")
     print(f"val:   {len(coco['val']['images'])} slices / {len(coco['val']['annotations'])} boxes")
+    if multiclass:
+        id2name = {c["id"]: c["name"] for c in categories}
+        per = Counter(id2name[a["category_id"]] for s in ("train", "val") for a in coco[s]["annotations"])
+        print("\nboxes per class:", ", ".join(f"{k}={v}" for k, v in per.most_common()))
     if args.keep_standard:
         kept_fams = Counter(a["family"] for s in ("train", "val") for a in coco[s]["annotations"])
         print(f"\nkept families (canonical): {dict(kept_fams.most_common())}")
